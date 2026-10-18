@@ -10392,7 +10392,7 @@ gadgetSearchSourceOption1:
   dc.b    "Modules.pl",0        ; 2 
   dc.b    "Radio stations",0    ; 6
   dc.b    "Remix.Kwed.org",0    ; 5
-  dc.b    "Shared lists",0      ; 7  
+  dc.b    "Playlists",0         ; 7
   dc.b    "Turran FTP",0        ; 8 
   even
 
@@ -59132,7 +59132,7 @@ remoteSearch
 .turranLineE
 
 .recentPlaylistsLine
-	dc.b	"http://asciiarena.se/",0
+	dc.b	"http://hippoplayer.se/",0
 .recentPlaylistsLineE
 
 .ampLine
