@@ -10298,6 +10298,13 @@ gadgetSearchStringAction:
     move.l  a0,d1
     DPRINT  "search string action %ld %s"
  endif
+    * Playlists: an empty search lists all playlists
+    cmp.b   #RECENT_PLAYLIST_VISUAL_POSITION,selectedSearch(a5)
+    bne     .typed
+    tst.b   gadgetSearchStringBuffer
+    bne     .typed
+    jmp     recentPlaylistsSearch
+.typed
     lea     gadgetSearchStringBuffer,a0
     bsr     beepIfSearchStringIsSmall
     bne     .1
@@ -10346,7 +10353,7 @@ gadgetSearchStringAction:
 .stations
     jmp stationsSearch(a0) 
 .recentPlaylists
-    jmp recentPlaylistsSearch(a0) 
+    jmp recentPlaylistsFilterSearch(a0) 
 .turran
     jmp turranSearch(a0) 
 .amp
@@ -36131,13 +36138,6 @@ refreshGadgetSearchSource:
     lea     gadgetSearchSource(a4),a3
     jsr     drawButtonFrameMainWindow
 
-    cmp.b   #RECENT_PLAYLIST_VISUAL_POSITION,selectedSearch(a5)
-    bne     .1
-    lea     gadgetSearchString(a4),a0
-    jmp     disableGadget
-   ;;; rts
-    ;;;;;;;jmp     recentPlaylistsSearch
-.1
     tst.b   uhcAvailable(a5)
     bne.b   .2
     rts
@@ -58408,7 +58408,17 @@ stationsSearch
 	moveq	#SEARCH_STATIONS,d7
 	bra 	remoteSearch
 
+* Lists all playlists. Clears the search terms so that
+* the string gadget matches what is shown.
 recentPlaylistsSearch
+	clr.b	gadgetSearchStringBuffer
+	lea		gadgetSearchStringStringInfo,a0
+	clr		si_BufferPos(a0)
+	clr		si_DispPos(a0)
+	lea		gadgetSearchString,a0
+	jsr		refreshGadgetInA0
+* Lists playlists matching the search terms
+recentPlaylistsFilterSearch
 	moveq	#SEARCH_RECENT_PLAYLISTS,d7
 	bra 	remoteSearch
 
@@ -59183,7 +59193,7 @@ remoteSearch
 	dc.b	"playlistsearch",0
 .recentPlaylistsSearchCmd
 	dc.b	"%s",10
-	dc.b 	'uhcmirrorsearch SEARCHRESULTTO=T:searchresults %s',10
+	dc.b 	'uhcmirrorsearch SEARCHRESULTTO=T:searchresults %s %s',10
 	dc.b	0
 .ampResultsPath
 	dc.b	"ampsearch",0
