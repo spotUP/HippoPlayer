@@ -2674,6 +2674,9 @@ sampleiik:
 
 sample_code:
 	lea	var_b(pc),a5
+ if DEBUG
+	bsr	stackFill
+ endif
 	addq	#1,sample_prosessi(a5)
 
 	DPRINT	"*** Process ***"
@@ -5719,7 +5722,48 @@ decodeMp3
 	bsr	songoverr
     * Start from the beginning?
 	bra	.wl2
-	
+
+* Fill the unused part of this process stack with a pattern,
+* so that stackHighWater can find the deepest use at exit.
+ if DEBUG
+STACK_PATTERN = $55aa55aa
+
+stackFill:
+	pushm	all
+	sub.l	a1,a1
+	lore	Exec,FindTask
+	move.l	d0,a0
+	move.l	TC_SPLOWER(a0),a0
+	lea	-64(sp),a1
+.fill
+	move.l	#STACK_PATTERN,(a0)+
+	cmp.l	a1,a0
+	blo.b	.fill
+	popm	all
+	rts
+
+* Print how many bytes of this process stack were used.
+stackHighWater:
+	pushm	all
+	sub.l	a1,a1
+	lore	Exec,FindTask
+	move.l	d0,a1
+	move.l	TC_SPLOWER(a1),a0
+	move.l	TC_SPUPPER(a1),d1
+.scan
+	cmp.l	#STACK_PATTERN,(a0)
+	bne.b	.found
+	addq.l	#4,a0
+	cmp.l	d1,a0
+	blo.b	.scan
+.found
+	move.l	d1,d0
+	sub.l	a0,d0
+	sub.l	TC_SPLOWER(a1),d1
+	DPRINT	"stack used=%ld of %ld"
+	popm	all
+	rts
+ endif
 
  if DEBUG
 readIoMeasurement   dc.l    0
@@ -5740,6 +5784,9 @@ quit2:
 quit3:
 	DPRINT	"quit3"
     DPRINT  "task exiting"
+ if DEBUG
+	bsr	stackHighWater
+ endif
 	lore	Exec,Forbid
 	clr	sample_prosessi(a5)
 	clr.b	killsample(a5)
@@ -5812,6 +5859,7 @@ wait:
     * Status: Z set, continue
     moveq	#0,d0
 .q	rts
+
 
 .aqq	clr.b	ahitrigger(a5)
 	bra.b	.qq
