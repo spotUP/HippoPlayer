@@ -52724,8 +52724,18 @@ id_vgm
     move.l  d0,a6
     move.l  modulefilename(a5),a0
     move.l  a2,a1
+    * The probe buffer is zero padded to its full size. A loaded
+    * module may be shorter than that: never pass more than its length.
     move.l  #PROBE_BUFFER_LEN,d0
-    jsr     -84(a6)
+    lea     probebuffer(a5),a1
+    cmp.l   a1,a2
+    move.l  a2,a1
+    beq.b   .lenOk
+    cmp.l   modulelength(a5),d0
+    bls.b   .lenOk
+    move.l  modulelength(a5),d0
+.lenOk
+    jsr     -84(a6)    * PVGM_IsOurFile
     move.l  d0,d2
     move.l  a6,a1
     lore    Exec,CloseLibrary
