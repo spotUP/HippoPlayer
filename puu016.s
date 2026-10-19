@@ -8211,10 +8211,6 @@ signalreceived
 	move	p_liput(a0),d0
 	btst	#pb_song,d0
  	beq	.reet
-    * Special case: VGM task has already stopped, 
-    * can't change to another song at this point.
-    cmp.w   #pt_vgm,p_type(a0)
-    beq     .reet
 	move	songnumber(a5),d0
 	cmp	maxsongs(a5),d0
 	bne	rbutton13		* next song!
@@ -8234,10 +8230,6 @@ signalreceived
 	move	p_liput(a0),d0
 	btst	#pb_song,d0
  	beq.b	.eipa
-    * Special case: VGM task has already stopped, 
-    * can't change to another song at this point.
-    cmp.w   #pt_vgm,p_type(a0)
-    beq     .eipa
 	move	songnumber(a5),d0
 	cmp	maxsongs(a5),d0
 	bne	rbutton13		* next song!
@@ -52505,7 +52497,8 @@ vgmSong:
 .next
 
     bsr      vgmSongChangePossible
-    beq     .x
+    * The converter exits at the end of a song, restart it on the new track
+    beq     .restart
     lore    Exec,Forbid
     move.l  d0,a1
     move.l  d3,d0
@@ -52517,17 +52510,15 @@ vgmSong:
 .x
     rts
 
- REM
 .restart
     DPRINT  "restarting"
     bsr     vgmEnd
     bsr     vgmInit0
     tst.l   d0
-    bpl.b   .ok
+    beq.b   .ok
     DPRINT  "Song change failed %ld"
 .ok 
     rts
- EREM
 
 pipe_vgm2wav:
     dc.l    0 * use homelock for current dir
