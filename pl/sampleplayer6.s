@@ -235,6 +235,26 @@ psi_songs       = 4
 psi_defaultSong = 6
 psi_durationMs  = 8
 psi_SIZEOF      = 460
+****************** playvgm library, see playvgm.library sfd/playvgm_lib.sfd
+_LVOPVGM_Open           =   -30
+_LVOPVGM_Close          =   -36
+_LVOPVGM_GetInfo        =   -42
+_LVOPVGM_SetSong        =   -48
+_LVOPVGM_Render         =   -54
+_LVOPVGM_Seek           =   -60
+_LVOPVGM_GetPosition    =   -66
+_LVOPVGM_SetSampleRate  =   -78
+PVGM_FMT_S16BE  = 2
+PVGM_RATE       = 22050
+* struct PVGMInfo, include/libraries/playvgm.h. WORD and LONG are 2-aligned.
+* version 0, channels 2, songs 4, defaultSong 6, durationMs[256] 8..1031,
+* loop[256] 1032..1287, title 1288, author 1416, date 1544, ntsc 1576,
+* pad 1578, system 1580, game 1644, copyright 1772, end 1900.
+pvi_channels    = 2
+pvi_songs       = 4
+pvi_defaultSong = 6
+pvi_durationMs  = 8
+pvi_SIZEOF      = 1900
 MPEGA_ERR_MEM      = (MPEGA_ERR_BASE-3)
 MPEGA_ERR_NO_SYNC  = (MPEGA_ERR_BASE-4)
 
@@ -357,6 +377,7 @@ tword	macro
 	ULONG	mfh_fh		;(must be the first item!!)
 	UWORD	mfh_is_xpk	;if non-zero then XPK
 	UWORD	mfh_is_sap	;if non-zero then playsap.library, mfh_fh is the PSAP handle
+	UWORD	mfh_is_gme	;if non-zero then playvgm.library, mfh_fh is the PVGM handle
 	ULONG	mfh_filepos	;XPK only - position in file
 	APTR	mfh_xbuff	;XPK only - address of decrunch buffer
 	ULONG	mfh_xbuffsize	;XPK only - size of decrunch buffer (=XPK chunksize)
@@ -490,6 +511,16 @@ sapPositionMs    rs.l    1
 saplippu         rs      1   * SAP mode on
 sapRendered      rs      1
 sapInfo          rs.b    psi_SIZEOF
+_PlayVgmBase     rs.l    1
+gmeHandle        rs.l    1   * PVGM handle
+gmeModule        rs.l    1   * module buffer, freed after PVGM_Open
+gmeSong          rs.l    1   * current subsong
+gmeSongRequest   rs.l    1   * subsong asked by host, -1 = none
+gmeSeekRequest   rs.l    1   * seek in ms asked by host, -1 = none
+gmePositionMs    rs.l    1
+gmelippu         rs      1   * GME mode on
+gmeRendered      rs      1
+gmeInfo          rs.b    pvi_SIZEOF
 sampleOutputInfo rs.l    1  * Return text describing the output mode
 
 pipeFormatDetail  rs.w   1
@@ -562,6 +593,8 @@ size_var	rs.b	0
     jmp mp3Seek(pc)
     jmp sapGetSongs(pc)
     jmp sapSetSong(pc)
+    jmp gmeGetSongs(pc)
+    jmp gmeSetSong(pc)
 
 	dc.l	16
 sample_segment
@@ -571,6 +604,7 @@ sample_segment
 
 mpegaName	dc.b	"mpega.library",0
 playsapName	dc.b	"playsap.library",0
+playvgmName	dc.b	"playvgm.library",0
  even
 
  if DEBUG
@@ -795,6 +829,11 @@ init:
     clr.l   sapHandle(a5)
     clr.l   sapModule(a5)
     clr.l   sapPositionMs(a5)
+    clr     gmelippu(a5)
+    clr     gmeRendered(a5)
+    clr.l   gmeHandle(a5)
+    clr.l   gmeModule(a5)
+    clr.l   gmePositionMs(a5)
 
     DPRINT  "***** SAMPLE PLAYER INIT *****"
  if DEBUG
@@ -916,6 +955,17 @@ init:
     clr.w   pipeFormatDetail(a5)
     bra     .wavinitPipeBypass
 .notSap
+
+    * "gme:" is a file layer handle, see _xopen. The data is
+    * 16-bit stereo big-endian PCM at 22050 Hz, like the PIPE wav bypass.
+    move.l  modulefilename(a5),a0
+    bsr     isGmeName
+    beq     .notGme
+    DPRINT  "sample gme: bypass"
+    move.b  #2,sampleformat(a5) * AIFF decoder
+    clr.w   pipeFormatDetail(a5)
+    bra     .wavinitPipeBypassLq
+.notGme
 
     bsr     isRemoteSample
     bne     .remote
@@ -2010,7 +2060,10 @@ prepareInfoLine:
 .fr1	tst	saplippu(a5)
 	beq.b	.fr1s
 	lea	.tSap(pc),a0
-.fr1s	move.l	a0,d0
+.fr1s	tst	gmelippu(a5)
+	beq.b	.fr1g
+	lea	.tGme(pc),a0
+.fr1g	move.l	a0,d0
 
 	tst	mplippu(a5)
 	beq.b	.yi0
@@ -2115,6 +2168,7 @@ prepareInfoLine:
 .t2               dc.b    "AIFF",0
 .t3               dc.b    "WAV",0
 .tSap             dc.b    "SAP",0
+.tGme             dc.b    "GME",0
 .t3midi           dc.b    "MIDI",0
 .t3ogg            dc.b    "Ogg",0
 .t4               dc.b    "MP",0
@@ -2169,6 +2223,32 @@ isSapName:
     move.b  2(a0),d0
     or.b    #$20,d0
     cmp.b   #"p",d0
+    bne.b   .no
+    cmp.b   #":",3(a0)
+    bne.b   .no
+    moveq   #1,d0
+    rts
+.no moveq   #0,d0
+    rts
+
+
+* Is the file name "gme:<path>", a module played through playvgm.library.
+* In:
+*   a0 = file name
+* Out:
+*   d0 = true or false, flags set
+isGmeName:
+    move.b  (a0),d0
+    or.b    #$20,d0
+    cmp.b   #"g",d0
+    bne.b   .no
+    move.b  1(a0),d0
+    or.b    #$20,d0
+    cmp.b   #"m",d0
+    bne.b   .no
+    move.b  2(a0),d0
+    or.b    #$20,d0
+    cmp.b   #"e",d0
     bne.b   .no
     cmp.b   #":",3(a0)
     bne.b   .no
@@ -2601,6 +2681,12 @@ sampleiik:
 	lore	Exec,CloseLibrary
 	clr.l	_PlaySapBase(a5)
 .x2
+	move.l	_PlayVgmBase(a5),d0
+	beq.b	.x3
+	move.l	d0,a1
+	lore	Exec,CloseLibrary
+	clr.l	_PlayVgmBase(a5)
+.x3
  if DEBUG
     bsr     closeTimer
  endif
@@ -6026,6 +6112,14 @@ mp_start
 	popm	all
 	rts
 .nosap
+	tst	gmelippu(a5)
+	beq.b	.nogme
+	pushm	all
+	move.l	gmeSong(a5),d0
+	bsr	gme_set_song
+	popm	all
+	rts
+.nogme
 	tst	mplippu(a5)
 	beq.b	.x
 	tst.l 	_MPEGABase(a5)
@@ -6053,6 +6147,7 @@ mp_start
 mp_close
 	pushm	all
 	bsr	sap_close
+	bsr	gme_close
     move.l  id3v2Data(a5),a0
     clr.l   id3v2Data(a5)
     bsr     freemem
@@ -6677,6 +6772,266 @@ sapSetSong:
 .x	movem.l	(sp)+,d0-a6
 	rts
 
+*********************************************************************
+* GME via playvgm.library
+* Uses sap_ms_to_secs for the millisecond conversion.
+*********************************************************************
+
+* In:
+*   d0 = subsong
+* Out:
+*   d0 = subsong duration in seconds, 0 if unknown
+gme_set_song
+	movem.l	d1-a6,-(sp)
+	move.l	d0,gmeSong(a5)
+	lsl.l	#2,d0
+	lea	gmeInfo+pvi_durationMs(a5),a0
+	move.l	(a0,d0.l),d7
+	move.l	d7,d1		* -1 = own duration or loop forever
+	move.l	gmeSong(a5),d0
+	move.l	gmeHandle(a5),a0
+	lore	PlayVgm,PVGM_SetSong
+	clr.l	gmePositionMs(a5)
+	move.l	d7,d0
+	bsr	sap_ms_to_secs
+	movem.l	(sp)+,d1-a6
+	rts
+
+* Fills the sample buffer from playvgm.library.
+* Applies subsong and seek requests from the host first.
+* In:
+*   d2 = destination
+*   d3 = bytes
+* Out:
+*   d0 = bytes rendered, less than d3 at song end
+read_gme
+	movem.l	d1-a6,-(sp)
+	move.l	gmeSongRequest(a5),d0
+	bmi.b	.noSong
+	moveq	#-1,d1
+	move.l	d1,gmeSongRequest(a5)
+	bsr	gme_set_song
+.noSong
+	move.l	gmeSeekRequest(a5),d0
+	bmi.b	.noSeek
+	moveq	#-1,d1
+	move.l	d1,gmeSeekRequest(a5)
+	move.l	gmeHandle(a5),a0
+	lore	PlayVgm,PVGM_Seek
+.noSeek
+	moveq	#0,d7		* restarted once already?
+.again
+	moveq	#0,d5		* bytes done
+.loop
+	move.l	d3,d0
+	sub.l	d5,d0
+	beq.b	.done
+	move.l	gmeHandle(a5),a0
+	move.l	d2,a1
+	add.l	d5,a1
+	moveq	#PVGM_FMT_S16BE,d1
+	lore	PlayVgm,PVGM_Render
+	tst.l	d0
+	ble.b	.end
+	add.l	d0,d5
+	bra.b	.loop
+.end
+	tst.l	d5
+	bne.b	.done
+	* Song ended exactly at a buffer boundary. A zero length
+	* read would stop the player, so signal song end here
+	* and restart the subsong. Only once, so a song that
+	* renders nothing cannot loop forever.
+	tst	d7
+	bne.b	.done
+	moveq	#1,d7
+	bsr	songoverr
+	move.l	gmeSong(a5),d0
+	bsr	gme_set_song
+	bra.b	.again
+.done
+ if DEBUG
+	tst	gmeRendered(a5)
+	bne.b	.d
+	st	gmeRendered(a5)
+	move.l	d5,d0
+	DPRINT	"gme: render %ld"
+.d
+ endif
+	move.l	gmeHandle(a5),a0
+	lore	PlayVgm,PVGM_GetPosition
+	move.l	d0,gmePositionMs(a5)
+	move.l	d5,d0
+	movem.l	(sp)+,d1-a6
+	rts
+
+* Called from mp3GetDurationInSeconds with a5 = var_b
+* Out:
+*   d0 = position secs
+*   d1 = length secs, 0 if unknown
+gmeGetDurationInSeconds
+	move.l	gmeSong(a5),d0
+	lsl.l	#2,d0
+	lea	gmeInfo+pvi_durationMs(a5),a0
+	move.l	(a0,d0.l),d0
+	bsr	sap_ms_to_secs
+	move.l	d0,d1
+	move.l	gmePositionMs(a5),d0
+	bsr	sap_ms_to_secs
+	rts
+
+* Called from the host task.
+* Out:
+*   d0 = number of subsongs, 0 if not GME
+*   d1 = default subsong
+gmeGetSongs:
+	push	a5
+	lea	var_b,a5
+	moveq	#0,d0
+	moveq	#0,d1
+	tst	gmelippu(a5)
+	beq.b	.x
+	move	gmeInfo+pvi_songs(a5),d0
+	move	gmeInfo+pvi_defaultSong(a5),d1
+.x	pop	a5
+	rts
+
+* Called from the host task.
+* The player task switches subsong at its next read.
+* In:
+*   d0 = subsong
+gmeSetSong:
+	movem.l	d0-a6,-(sp)
+	lea	var_b,a5
+	tst	gmelippu(a5)
+	beq.b	.x
+	cmp	gmeInfo+pvi_songs(a5),d0
+	bhs.b	.x
+	and.l	#$ffff,d0
+	DPRINT	"gmeSetSong %ld"
+	move.l	d0,gmeSongRequest(a5)
+	lsl.l	#2,d0
+	lea	gmeInfo+pvi_durationMs(a5),a0
+	move.l	(a0,d0.l),d0
+	bsr	sap_ms_to_secs
+	bsr	init\.moi_mp
+.x	movem.l	(sp)+,d0-a6
+	rts
+
+* Open "gme:<path>" through playvgm.library. Called from _xopen.
+* The file after the prefix is loaded into memory for PVGM_Open.
+* Output is always 16-bit stereo big-endian at PVGM_RATE.
+* In:
+*   a4 = myFH, mfh_filename = "gme:<path>"
+* Out:
+*   d0 = 0 if ok, -1 if error
+gmeOpen
+	DPRINT	"gmeOpen"
+	lea	var_b,a5
+	move.l	4.w,a6
+	tst.l	_PlayVgmBase(a5)
+	bne.b	.lib
+	lea	playvgmName(pc),a1
+	moveq	#1,d0
+	lob	OpenLibrary
+	move.l	d0,_PlayVgmBase(a5)
+	bne.b	.lib
+	DPRINT	"no playvgm"
+	bra	.fail
+.lib
+	lea	fh2(a5),a0
+	move.l	mfh_filename(a4),d0
+	addq.l	#4,d0
+	move.l	d0,mfh_filename(a0)
+	bsr	_xopen
+	bne	.fail
+	* The file size is the position of the end
+	lea	fh2(a5),a0
+	moveq	#0,d2
+	moveq	#OFFSET_END,d3
+	bsr	_xseek
+	lea	fh2(a5),a0
+	moveq	#0,d2
+	moveq	#OFFSET_BEGINNING,d3
+	bsr	_xseek
+	move.l	d0,d6
+	ble	.closebad
+	move.l	d6,d0
+	move.l	#MEMF_PUBLIC,d1
+	bsr	getmem
+	move.l	d0,gmeModule(a5)
+	beq	.closebad
+	move.l	d0,d2
+	move.l	d6,d3
+	lea	fh2(a5),a0
+	bsr	_xread
+	move.l	d0,d7
+	lea	fh2(a5),a0
+	bsr	_xclose
+	cmp.l	d6,d7
+	bne	.bad
+
+	move.l	gmeModule(a5),a0
+	move.l	d7,d0
+	move.l	mfh_filename(a4),a1
+	addq.l	#4,a1
+	lore	PlayVgm,PVGM_Open
+	move.l	d0,gmeHandle(a5)
+	beq	.bad
+	* The library keeps its own copy of the module
+	move.l	gmeModule(a5),a0
+	clr.l	gmeModule(a5)
+	bsr	freemem
+
+	move.l	gmeHandle(a5),a0
+	lea	gmeInfo(a5),a1
+	lore	PlayVgm,PVGM_GetInfo
+
+	* SetSampleRate comes before SetSong
+	move.l	#PVGM_RATE,d0
+	move.l	gmeHandle(a5),a0
+	lore	PlayVgm,PVGM_SetSampleRate
+
+	moveq	#0,d0
+	move	gmeInfo+pvi_defaultSong(a5),d0
+	bsr	gme_set_song
+	bsr	init\.moi_mp
+
+	moveq	#-1,d0
+	move.l	d0,gmeSongRequest(a5)
+	move.l	d0,gmeSeekRequest(a5)
+	st	gmelippu(a5)
+	move.l	gmeHandle(a5),mfh_fh(a4)
+	move	#1,mfh_is_gme(a4)
+	moveq	#0,d0
+	rts
+.closebad
+	lea	fh2(a5),a0
+	bsr	_xclose
+.bad
+	DPRINT	"playvgm rejected the file"
+	bsr	gme_close
+.fail
+	moveq	#-1,d0
+	rts
+
+* Close the playvgm.library handle and free the module buffer.
+* Safe to call several times.
+gme_close
+	pushm	all
+	lea	var_b,a5
+	move.l	gmeHandle(a5),d0
+	beq.b	.nogh
+	move.l	d0,a0
+	clr.l	gmeHandle(a5)
+	lore	PlayVgm,PVGM_Close
+.nogh
+	move.l	gmeModule(a5),a0
+	clr.l	gmeModule(a5)
+	bsr	freemem
+	popm	all
+	rts
+
 * Checks if mp3 can be seeked 
 isLocalMp3:
     tst.b   mplippu(a5)
@@ -6699,6 +7054,8 @@ mp3GetDurationInSeconds:
     moveq   #0,d1
     tst     saplippu(a5)
     bne     sapGetDurationInSeconds
+    tst     gmelippu(a5)
+    bne     gmeGetDurationInSeconds
     bsr     isLocalMp3
     beq     .x
     tst.b   mhiEnable(a5) 
@@ -6764,6 +7121,13 @@ mp3Seek:
     move.l  d0,sapSeekRequest(a5)
     rts
 .nosap
+    tst     gmelippu(a5)
+    beq.b   .nogme
+    mulu.w  #1000,d0
+    DPRINT  "gmeSeek %ld ms"
+    move.l  d0,gmeSeekRequest(a5)
+    rts
+.nogme
     bsr     isLocalMp3
     beq     .x
     tst.b   mhiEnable(a5) 
@@ -7126,6 +7490,13 @@ _xopen
 	bsr	sapOpen
 	bra	.exit
 .notsap
+	move.l	(mfh_filename,a5),a0
+	bsr	isGmeName
+	beq.b	.notgme
+	move.l	a5,a4
+	bsr	gmeOpen
+	bra	.exit
+.notgme
 	move.l	(mfh_filename,a5),d1
  if DEBUG
     move.l  d1,d0
@@ -7226,6 +7597,8 @@ xpkerrormsg	ds.b	82
 _xread
 	movem.l	d1-a6,-(a7)
 	move.l	a0,a5		;myFH
+	tst	(mfh_is_gme,a5)
+	bne	.is_gme
 	tst	(mfh_is_sap,a5)
 	bne	.is_sap
 	tst	(mfh_is_xpk,a5)
@@ -7291,6 +7664,11 @@ _xread
 	DPRINT	"sap: _xread %ld bytes"
 	bra	.exit
 
+.is_gme	lea	var_b,a5
+	bsr	read_gme
+	DPRINT	"gme: _xread %ld bytes"
+	bra	.exit
+
 
 ;***_XSeek**********************************************************
 ; parameters:
@@ -7302,6 +7680,8 @@ _xread
 _xseek
 	movem.l	d1-a6,-(a7)
 	move.l	a0,a5			;myFH
+	tst	(mfh_is_gme,a5)
+	bne.b	.is_gme
 	tst	(mfh_is_sap,a5)
 	bne.b	.is_sap
 	tst	(mfh_is_xpk,a5)
@@ -7323,6 +7703,8 @@ _xseek
 .exit	movem.l	(a7)+,d1-a6
 	rts
 .is_sap	moveq	#0,d0		;sap: stream has no seeking
+	bra.b	.exit
+.is_gme	moveq	#0,d0		;gme: stream has no seeking
 	bra.b	.exit
 .is_xpk	move.l	d2,d6			;newpos
 	move.l	(mfh_filepos,a5),d7	;oldpos
@@ -7394,6 +7776,8 @@ _xclose
 	move.l	(a5),d1
 	beq.b	.no_fh
 	clr.l	(a5)
+	tst	(mfh_is_gme,a5)
+	bne.b	.is_gme
 	tst	(mfh_is_sap,a5)
 	bne.b	.is_sap
 	tst	(mfh_is_xpk,a5)
@@ -7403,6 +7787,9 @@ _xclose
 	bra.b	.no_fh
 .is_sap	clr	(mfh_is_sap,a5)
 	bsr	sap_close
+	bra.b	.no_fh
+.is_gme	clr	(mfh_is_gme,a5)
+	bsr	gme_close
 	bra.b	.no_fh
 .is_xpk	move.l	(_XPKBase+var_b),d0
 	beq.b	.no_fh
