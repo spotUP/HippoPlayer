@@ -52259,6 +52259,8 @@ vgmTempExt      dc.b    "vgm",0,0
 vgmPollFile     dc.b    "T:vgmlen",0
 * Set to true if actually handling an MDX fil
 vgmActuallyMdx  dc.b    0
+* Set to true if handling a SAP file with sap2wav + playsap.library
+vgmActuallySap  dc.b    0
                 even
 * VB activated poller: -1 to disable, counts up to a second or so then wraps
 vgmPollCount    dc.w    -1 
@@ -52317,6 +52319,13 @@ vgmInit0
     beq     .44
     pushpea pipe_mdx2wav(pc),d0
 .44
+    tst.b   vgmActuallySap(pc)
+    beq     .45
+    * SAP descriptor has its own song parameter, take current track
+    lea     sapTrackNumber(pc),a1
+    move.w  vgmTrackNumber(pc),(a1)
+    pushpea pipe_sap2wav(pc),d0
+.45
     jsr     startLocalStreaming
     DPRINT  "startStreaming=%lx"
     tst.l   d0
@@ -52363,13 +52372,18 @@ vgmInit0
     move.b  vgmActuallyMdx(pc),d0
     beq     .2
     lea     .msg2(pc),a1
-.2  bra     commonStreamError
+.2  tst.b   vgmActuallySap(pc)
+    beq     .3
+    lea     .msg3(pc),a1
+.3  bra     commonStreamError
 
 
 .msg
   dc.b    "Error starting 'vgm2wav'",0
 .msg2
   dc.b    "Error starting 'mdx2wav'",0
+.msg3
+  dc.b    "Error starting 'sap2wav'",0
   even
 
 * Handle error when starting streamer
@@ -52439,6 +52453,13 @@ vgmInfoText:
     lea     .formMdx(pc),a0
     move.l  d2,d0
 .2
+    tst.b   vgmActuallySap(pc)
+    beq     .3
+    * "SAP %ldch PLAYSAP %s": voices, then AHI info
+    lea     .formSap(pc),a0
+    move.l  d1,d0
+    move.l  d2,d1
+.3
     lea     vgmTitle(pc),a3
     jsr     desmsg3
     lea     8(sp),sp
@@ -52449,6 +52470,7 @@ vgmInfoText:
 .null     dc.b    0
 .form     dc.b    "%s %ldch VGM2WAV %s",0
 .formMdx  dc.b    "MDX 8ch MDX2WAV %s",0
+.formSap  dc.b    "SAP %ldch PLAYSAP %s",0
           even
 
 vgmSongChangePossible:
@@ -52538,6 +52560,58 @@ pipe_mdx2wav:
 .mdxCliName  dc.b    "mdx2wav",0
 .mdxCmdLq    dc.b    '%s "%s" -r 22050 -p t:vgmlen -o PIPE:wavHippoStream3/65536/2',10
              dc.b    0
+             even
+
+* SAP through sap2wav (playsap.library). RAW: header-less stereo S16BE,
+* LENFILE: 3-LONG length file as for vgm2wav, Ctrl-D/Ctrl-E change the song.
+pipe_sap2wav:
+             dc.l    0 * use homelock for current dir
+             dc.l    sapCliName
+             dc.l    sapCmdLq
+             dc.l    wavStreamPipeFileLQ
+             dc.l    0 * no setup
+             dc.l    10000 * large stack
+             dc.l    vgmPoll * same 3-LONG length file as vgm2wav
+             dc.l    0 * additional format string parameter: song number
+sapTrackNumber = *-2
+
+sapCliName   dc.b    "sap2wav",0
+sapCmdLq     dc.b    '%s "%s" PIPE:wavHippoStream3/65536/2 SONG %ld RATE 22050 RAW LENFILE t:vgmlen',10
+             dc.b    0
+             even
+
+* Is sap2wav usable: playsap.library opens and sap2wav is found in
+* the home dir, which is where startLocalStreaming runs the streamer.
+* Out:
+*   d0 = true or false
+vgmSapUsable:
+    pushm   d1-d4/a0-a1/a6
+    moveq   #0,d3
+    lea     sapLibName(pc),a1
+    moveq   #1,d0
+    lore    Exec,OpenLibrary
+    tst.l   d0
+    beq     .x
+    move.l  d0,a1
+    lob     CloseLibrary
+    move.l  homelock(a5),d1
+    beq     .x
+    lore    Dos,CurrentDir
+    move.l  d0,d4
+    pushpea sapCliName(pc),d1
+    moveq   #ACCESS_READ,d2
+    lob     Lock
+    move.l  d0,d3
+    move.l  d4,d1
+    lob     CurrentDir
+    move.l  d3,d1
+    beq     .x
+    lob     UnLock
+.x  move.l  d3,d0
+    popm    d1-d4/a0-a1/a6
+    rts
+
+sapLibName   dc.b    "playsap.library",0
              even
 
  
@@ -52742,6 +52816,12 @@ id_vgm
     tst.b   uusikick(a5)
     beq     .no
 
+    * Not SAP unless proven below
+    push    a0
+    lea     vgmActuallySap(pc),a0
+    clr.b   (a0)
+    pop     a0
+
     * Check for MDX
     push    a0
     move.l  modulefilename(a5),a0
@@ -52774,6 +52854,15 @@ id_vgm
 
     bsr     vgmGet4
     beq     .no
+    * SAP: use sap2wav if playsap is usable, otherwise vgm2wav handles it
+    cmp.l   #"SAP ",d0
+    bne     .yes
+    push    a0
+    bsr     vgmSapUsable
+    lea     vgmActuallySap(pc),a0
+    tst.l   d0
+    sne     (a0)
+    pop     a0
 .yes
     moveq   #0,d0   * yes
     rts
