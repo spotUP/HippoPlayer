@@ -226,9 +226,9 @@ _LVOPSAP_Render         =   -54
 _LVOPSAP_Seek           =   -60
 _LVOPSAP_GetPosition    =   -66
 _LVOPSAP_SetSampleRate  =   -78
-PSAP_FMT_S16BE  = 2
+PSAP_FMT_S16BE_STEREO = 3
 PSAP_MAX_MODULE = 65000
-PSAP_RATE       = 22050
+PSAP_RATE       = 27710
 * struct PSAPInfo, libraries/playsap.h
 psi_channels    = 2
 psi_songs       = 4
@@ -356,6 +356,7 @@ tword	macro
 	STRUCTURE myFH,0
 	ULONG	mfh_fh		;(must be the first item!!)
 	UWORD	mfh_is_xpk	;if non-zero then XPK
+	UWORD	mfh_is_sap	;if non-zero then playsap.library, mfh_fh is the PSAP handle
 	ULONG	mfh_filepos	;XPK only - position in file
 	APTR	mfh_xbuff	;XPK only - address of decrunch buffer
 	ULONG	mfh_xbuffsize	;XPK only - size of decrunch buffer (=XPK chunksize)
@@ -905,6 +906,17 @@ init:
     bra     .wavinitPipeBypass
 .notPipeW
 
+    * "sap:" is a file layer handle, see _xopen. The data is
+    * 16-bit stereo big-endian PCM at 27710 Hz, like the PIPE wav bypass.
+    move.l  modulefilename(a5),a0
+    bsr     isSapName
+    beq     .notSap
+    DPRINT  "sample sap: bypass"
+    move.b  #2,sampleformat(a5) * AIFF decoder
+    clr.w   pipeFormatDetail(a5)
+    bra     .wavinitPipeBypass
+.notSap
+
     bsr     isRemoteSample
     bne     .remote
 
@@ -934,8 +946,6 @@ init:
 
 	cmp.b	#4,sampleformat(a5)
 	beq	.mpinit
-	cmp.b	#6,sampleformat(a5)
-	beq	.sapinit
 
 
 *********************************************************************
@@ -1194,103 +1204,6 @@ init:
 
 	move.l	(a0)+,d0
 	bra	.wah
-
-*********************************************************************
-* Init
-* SAP INIT
-* playsap.library renders 16-bit PCM, played as AIFF like MP3
-*********************************************************************
-
-.sapinit:
-	DPRINT	"SAP init"
-	move.l	4.w,a6
-	lea	playsapName(pc),a1
-	moveq	#1,d0
-	lob	OpenLibrary
-	move.l	d0,_PlaySapBase(a5)
-	bne.b	.sap1
-	DPRINT	"no playsap"
-	moveq	#ier_not_compatible,d0
-	bra	sampleiik
-.sap1
-	move.l	#PSAP_MAX_MODULE+1,d0
-	move.l	#MEMF_PUBLIC,d1
-	bsr	getmem
-	move.l	d0,sapModule(a5)
-	bne.b	.sap2
-	DPRINT	"ier_nomem"
-	moveq	#ier_nomem,d0
-	bra	sampleiik
-.sap2
-	* Read the whole file, one byte more than the library accepts
-	lea	fh1(a5),a0
-	move.l	modulefilename(a5),mfh_filename(a0)
-	bsr	_xopen
-	bne	.orok
-	move.l	sapModule(a5),d2
-	move.l	#PSAP_MAX_MODULE+1,d3
-	lea	fh1(a5),a0
-	bsr	_xread
-	move.l	d0,d7
-	lea	fh1(a5),a0
-	bsr	_xclose
-	tst.l	d7
-	ble	.orok
-	cmp.l	#PSAP_MAX_MODULE,d7
-	bhi	.sapbad
-
-	move.l	sapModule(a5),a0
-	move.l	d7,d0
-	move.l	modulefilename(a5),a1
-	lore	PlaySap,PSAP_Open
-	move.l	d0,sapHandle(a5)
-	beq	.sapbad
-	* The library keeps its own copy of the module
-	move.l	sapModule(a5),a0
-	clr.l	sapModule(a5)
-	bsr	freemem
-
-	move.l	sapHandle(a5),a0
-	lea	sapInfo(a5),a1
-	lore	PlaySap,PSAP_GetInfo
-
-	* Output rate, sampleforcerate overrides it
-	move	#PSAP_RATE,samplefreq(a5)
-	bsr	.freqcheck
-	moveq	#0,d0
-	move	samplefreq(a5),d0
-	move.l	sapHandle(a5),a0
-	lore	PlaySap,PSAP_SetSampleRate
-
-	cmp	#2,sapInfo+psi_channels(a5)
-	seq	samplestereo(a5)
-	st	samplebits(a5)
-
-	moveq	#0,d0
-	move	sapInfo+psi_defaultSong(a5),d0
-	bsr	sap_set_song
-	bsr	.moi_mp
-
-	moveq	#-1,d0
-	move.l	d0,sapSongRequest(a5)
-	move.l	d0,sapSeekRequest(a5)
-	st	saplippu(a5)
-	move.b	#2,sampleformat(a5)	* plays as AIFF, like MP3
-
-	move.l	samplebufsiz(a5),d0
-	lsl.l	#2,d0
-	move.l	#MEMF_PUBLIC!MEMF_CLEAR,d1
-	bsr	getmem
-	move.l	d0,samplework(a5)
-	bne	.sampleok
-	DPRINT	"ier_nomem"
-	moveq	#ier_nomem,d0
-	bra	sampleiik
-
-.sapbad
-	DPRINT	"playsap rejected the file"
-	moveq	#ier_not_compatible,d0
-	bra	sampleiik
 
 *********************************************************************
 * Init
@@ -2234,6 +2147,32 @@ isPipe:
     rts
 .local
     moveq   #0,d0
+    rts
+
+
+* Is the file name "sap:<path>", a module played through playsap.library.
+* In:
+*   a0 = file name
+* Out:
+*   d0 = true or false, flags set
+isSapName:
+    move.b  (a0),d0
+    or.b    #$20,d0
+    cmp.b   #"s",d0
+    bne.b   .no
+    move.b  1(a0),d0
+    or.b    #$20,d0
+    cmp.b   #"a",d0
+    bne.b   .no
+    move.b  2(a0),d0
+    or.b    #$20,d0
+    cmp.b   #"p",d0
+    bne.b   .no
+    cmp.b   #":",3(a0)
+    bne.b   .no
+    moveq   #1,d0
+    rts
+.no moveq   #0,d0
     rts
 
 
@@ -3352,11 +3291,6 @@ sample_code:
 ;	move.l	samplehandle(a5),d1
 ;	lore	Dos,Read	
 
-	tst	saplippu(a5)
-	beq.b	.em1s
-	bsr	read_sap
-	bra.b	.emm1
-.em1s
 	tst	mplippu(a5)
 	beq.b	.em1
 	lsr.l	#1,d3
@@ -3821,11 +3755,6 @@ wavread2
 ;	move.l	samplehandle(a5),d1
 ;	lore	Dos,Read	
 
-	tst	saplippu(a5)
-	beq.b	.em2s
-	bsr	read_sap
-	bra.b	.emm2
-.em2s
 	tst	mplippu(a5)
 	beq.b	.em2
 	lsr.l	#2,d3
@@ -6121,15 +6050,7 @@ mp_start
 
 mp_close
 	pushm	all
-	move.l	sapHandle(a5),d0
-	beq.b	.nosh
-	move.l	d0,a0
-	clr.l	sapHandle(a5)
-	lore	PlaySap,PSAP_Close
-.nosh
-	move.l	sapModule(a5),a0
-	clr.l	sapModule(a5)
-	bsr	freemem
+	bsr	sap_close
     move.l  id3v2Data(a5),a0
     clr.l   id3v2Data(a5)
     bsr     freemem
@@ -6317,8 +6238,6 @@ songoverr:
 closesample
 	pushm	all
 
-	tst	saplippu(a5)
-	bne.b	.c
 	tst	mplippu(a5)
 	bne.b	.c
 
@@ -6532,7 +6451,110 @@ sap_ms_to_secs
 	and.l	#$ffff,d0
 	rts
 
-* Fills the sample buffer from playsap.library.
+* Open "sap:<path>" through playsap.library. Called from _xopen.
+* The file after the prefix is loaded into memory for PSAP_Open.
+* Output is always 16-bit stereo big-endian at PSAP_RATE.
+* In:
+*   a4 = myFH, mfh_filename = "sap:<path>"
+* Out:
+*   d0 = 0 if ok, -1 if error
+sapOpen
+	DPRINT	"sapOpen"
+	lea	var_b,a5
+	move.l	4.w,a6
+	tst.l	_PlaySapBase(a5)
+	bne.b	.lib
+	lea	playsapName(pc),a1
+	moveq	#1,d0
+	lob	OpenLibrary
+	move.l	d0,_PlaySapBase(a5)
+	bne.b	.lib
+	DPRINT	"no playsap"
+	bra	.fail
+.lib
+	* Read the whole file, one byte more than the library accepts
+	move.l	#PSAP_MAX_MODULE+1,d0
+	move.l	#MEMF_PUBLIC,d1
+	bsr	getmem
+	move.l	d0,sapModule(a5)
+	beq	.fail
+	lea	fh2(a5),a0
+	move.l	mfh_filename(a4),d0
+	addq.l	#4,d0
+	move.l	d0,mfh_filename(a0)
+	bsr	_xopen
+	bne	.bad
+	move.l	sapModule(a5),d2
+	move.l	#PSAP_MAX_MODULE+1,d3
+	lea	fh2(a5),a0
+	bsr	_xread
+	move.l	d0,d7
+	lea	fh2(a5),a0
+	bsr	_xclose
+	tst.l	d7
+	ble	.bad
+	cmp.l	#PSAP_MAX_MODULE,d7
+	bhi	.bad
+
+	move.l	sapModule(a5),a0
+	move.l	d7,d0
+	move.l	mfh_filename(a4),a1
+	addq.l	#4,a1
+	lore	PlaySap,PSAP_Open
+	move.l	d0,sapHandle(a5)
+	beq	.bad
+	* The library keeps its own copy of the module
+	move.l	sapModule(a5),a0
+	clr.l	sapModule(a5)
+	bsr	freemem
+
+	move.l	sapHandle(a5),a0
+	lea	sapInfo(a5),a1
+	lore	PlaySap,PSAP_GetInfo
+
+	* SetSampleRate comes before SetSong
+	move.l	#PSAP_RATE,d0
+	move.l	sapHandle(a5),a0
+	lore	PlaySap,PSAP_SetSampleRate
+
+	moveq	#0,d0
+	move	sapInfo+psi_defaultSong(a5),d0
+	bsr	sap_set_song
+	bsr	init\.moi_mp
+
+	moveq	#-1,d0
+	move.l	d0,sapSongRequest(a5)
+	move.l	d0,sapSeekRequest(a5)
+	st	saplippu(a5)
+	move.l	sapHandle(a5),mfh_fh(a4)
+	move	#1,mfh_is_sap(a4)
+	moveq	#0,d0
+	rts
+.bad
+	DPRINT	"playsap rejected the file"
+	bsr	sap_close
+.fail
+	moveq	#-1,d0
+	rts
+
+* Close the playsap.library handle and free the module buffer.
+* Safe to call several times.
+sap_close
+	pushm	all
+	lea	var_b,a5
+	move.l	sapHandle(a5),d0
+	beq.b	.nosh
+	move.l	d0,a0
+	clr.l	sapHandle(a5)
+	lore	PlaySap,PSAP_Close
+.nosh
+	move.l	sapModule(a5),a0
+	clr.l	sapModule(a5)
+	bsr	freemem
+	popm	all
+	rts
+
+* Fills the sample buffer from playsap.library. Called from _xread.
 * Applies subsong and seek requests from the host first.
 * In:
 *   d2 = destination
@@ -6564,7 +6586,7 @@ read_sap
 	move.l	sapHandle(a5),a0
 	move.l	d2,a1
 	add.l	d5,a1
-	moveq	#PSAP_FMT_S16BE,d1
+	moveq	#PSAP_FMT_S16BE_STEREO,d1
 	lore	PlaySap,PSAP_Render
 	tst.l	d0
 	ble.b	.end
@@ -7095,6 +7117,13 @@ _xopen
 ;	bra	.end_ok
 ;.notloadall
 
+	move.l	(mfh_filename,a5),a0
+	bsr	isSapName
+	beq.b	.notsap
+	move.l	a5,a4
+	bsr	sapOpen
+	bra	.exit
+.notsap
 	move.l	(mfh_filename,a5),d1
  if DEBUG
     move.l  d1,d0
@@ -7195,6 +7224,8 @@ xpkerrormsg	ds.b	82
 _xread
 	movem.l	d1-a6,-(a7)
 	move.l	a0,a5		;myFH
+	tst	(mfh_is_sap,a5)
+	bne	.is_sap
 	tst	(mfh_is_xpk,a5)
 	bne.b	.is_xpk
 
@@ -7253,6 +7284,12 @@ _xread
 	bra.b	.exit
 
 
+.is_sap	lea	var_b,a5
+	bsr	read_sap
+	DPRINT	"sap: _xread %ld bytes"
+	bra	.exit
+
+
 ;***_XSeek**********************************************************
 ; parameters:
 ;  a0 - myFH
@@ -7263,6 +7300,8 @@ _xread
 _xseek
 	movem.l	d1-a6,-(a7)
 	move.l	a0,a5			;myFH
+	tst	(mfh_is_sap,a5)
+	bne.b	.is_sap
 	tst	(mfh_is_xpk,a5)
 	bne.b	.is_xpk
 
@@ -7281,6 +7320,8 @@ _xseek
 	lob	Seek
 .exit	movem.l	(a7)+,d1-a6
 	rts
+.is_sap	moveq	#0,d0		;sap: stream has no seeking
+	bra.b	.exit
 .is_xpk	move.l	d2,d6			;newpos
 	move.l	(mfh_filepos,a5),d7	;oldpos
 	tst.l	d3			;offset
@@ -7351,10 +7392,15 @@ _xclose
 	move.l	(a5),d1
 	beq.b	.no_fh
 	clr.l	(a5)
+	tst	(mfh_is_sap,a5)
+	bne.b	.is_sap
 	tst	(mfh_is_xpk,a5)
 	bne.b	.is_xpk
 	move.l	_DosBase+var_b,a6
 	lob	Close
+	bra.b	.no_fh
+.is_sap	clr	(mfh_is_sap,a5)
+	bsr	sap_close
 	bra.b	.no_fh
 .is_xpk	move.l	(_XPKBase+var_b),d0
 	beq.b	.no_fh
