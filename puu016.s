@@ -1932,7 +1932,10 @@ progstart
 	move.l	d3,segment(a5)		* seuraavan hunkin pointteri
 	clr.l	(a0)
 ;	move.l	#4000,d4		* stacksize
-	move.l	#5000,d4		* stacksize
+	* 5000 for HiP itself, plus 6144 that playvgm.library needs below
+	* its calls (libraries/playvgm.h STACK). The id_vgm check and the
+	* sample player's gmeOpen run on this process.
+	move.l	#5000+6144,d4		* stacksize
 	move.l	a4,a6
 	lob	CreateProc	
 

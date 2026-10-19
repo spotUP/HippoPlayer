@@ -246,6 +246,9 @@ _LVOPVGM_GetPosition    =   -66
 _LVOPVGM_SetSampleRate  =   -78
 PVGM_FMT_S16BE  = 2
 PVGM_RATE       = 22050
+* playvgm.library runs on the caller's stack and needs this much free
+* below each call (libraries/playvgm.h STACK).
+PVGM_STACK      = 6144
 * struct PVGMInfo, include/libraries/playvgm.h. WORD and LONG are 2-aligned.
 * version 0, channels 2, songs 4, defaultSong 6, durationMs[256] 8..1031,
 * loop[256] 1032..1287, title 1288, author 1416, date 1544, ntsc 1576,
@@ -1955,7 +1958,7 @@ init:
 	moveq	#0,d2			* pri
 	pushpea	sample_segment(pc),d3
 	lsr.l	#2,d3
-	* playvgm.library needs 6144 bytes below its calls (playvgm.h STACK)
+	* playvgm.library needs PVGM_STACK bytes below its calls
 	* plus this process's own frames; 4000 was sized for the other players.
 	move.l	#8192,d4
 	lore	Dos,CreateProc
@@ -6928,6 +6931,15 @@ gmeSetSong:
 gmeOpen
 	DPRINT	"gmeOpen"
 	lea	var_b,a5
+	* gmeOpen runs on the host's task, not the sample process.
+	* Refuse the file rather than let the library overrun that stack.
+	move.l	4.w,a0
+	move.l	ThisTask(a0),a0
+	move.l	sp,d0
+	sub.l	TC_SPLOWER(a0),d0
+	DPRINT	"gme: stack free %ld"
+	cmp.l	#PVGM_STACK,d0
+	blo	.fail
 	move.l	4.w,a6
 	tst.l	_PlayVgmBase(a5)
 	bne.b	.lib
