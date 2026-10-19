@@ -216,6 +216,25 @@ MPEGA_ERR_NONE     = 0
 MPEGA_ERR_BASE     = 0
 MPEGA_ERR_EOF      = (MPEGA_ERR_BASE-1)
 MPEGA_ERR_BADFRAME = (MPEGA_ERR_BASE-2)
+
+****************** playsap library, see playsap.library fd/playsap_lib.fd
+_LVOPSAP_Open           =   -30
+_LVOPSAP_Close          =   -36
+_LVOPSAP_GetInfo        =   -42
+_LVOPSAP_SetSong        =   -48
+_LVOPSAP_Render         =   -54
+_LVOPSAP_Seek           =   -60
+_LVOPSAP_GetPosition    =   -66
+_LVOPSAP_SetSampleRate  =   -78
+PSAP_FMT_S16BE  = 2
+PSAP_MAX_MODULE = 65000
+PSAP_RATE       = 22050
+* struct PSAPInfo, libraries/playsap.h
+psi_channels    = 2
+psi_songs       = 4
+psi_defaultSong = 6
+psi_durationMs  = 8
+psi_SIZEOF      = 460
 MPEGA_ERR_MEM      = (MPEGA_ERR_BASE-3)
 MPEGA_ERR_NO_SYNC  = (MPEGA_ERR_BASE-4)
 
@@ -460,6 +479,16 @@ mainTask    rs.l    1
 
 mp3DurationInMs  rs.l    1
 mp3PositionInMs  rs.l    1   
+_PlaySapBase     rs.l    1
+sapHandle        rs.l    1   * PSAP handle
+sapModule        rs.l    1   * module buffer, freed after PSAP_Open
+sapSong          rs.l    1   * current subsong
+sapSongRequest   rs.l    1   * subsong asked by host, -1 = none
+sapSeekRequest   rs.l    1   * seek in ms asked by host, -1 = none
+sapPositionMs    rs.l    1
+saplippu         rs      1   * SAP mode on
+sapRendered      rs      1
+sapInfo          rs.b    psi_SIZEOF
 sampleOutputInfo rs.l    1  * Return text describing the output mode
 
 pipeFormatDetail  rs.w   1
@@ -530,6 +559,8 @@ size_var	rs.b	0
     jmp getMp3TagText(pc)
     jmp mp3GetDurationInSeconds(pc)
     jmp mp3Seek(pc)
+    jmp sapGetSongs(pc)
+    jmp sapSetSong(pc)
 
 	dc.l	16
 sample_segment
@@ -538,6 +569,7 @@ sample_segment
 
 
 mpegaName	dc.b	"mpega.library",0
+playsapName	dc.b	"playsap.library",0
  even
 
  if DEBUG
@@ -757,6 +789,11 @@ init:
     bne.b   .copyName  
 
 	move	a6,sampleforcerate(a5)
+    clr     saplippu(a5)
+    clr     sapRendered(a5)
+    clr.l   sapHandle(a5)
+    clr.l   sapModule(a5)
+    clr.l   sapPositionMs(a5)
 
     DPRINT  "***** SAMPLE PLAYER INIT *****"
  if DEBUG
@@ -897,6 +934,8 @@ init:
 
 	cmp.b	#4,sampleformat(a5)
 	beq	.mpinit
+	cmp.b	#6,sampleformat(a5)
+	beq	.sapinit
 
 
 *********************************************************************
@@ -1155,6 +1194,103 @@ init:
 
 	move.l	(a0)+,d0
 	bra	.wah
+
+*********************************************************************
+* Init
+* SAP INIT
+* playsap.library renders 16-bit PCM, played as AIFF like MP3
+*********************************************************************
+
+.sapinit:
+	DPRINT	"SAP init"
+	move.l	4.w,a6
+	lea	playsapName(pc),a1
+	moveq	#1,d0
+	lob	OpenLibrary
+	move.l	d0,_PlaySapBase(a5)
+	bne.b	.sap1
+	DPRINT	"no playsap"
+	moveq	#ier_not_compatible,d0
+	bra	sampleiik
+.sap1
+	move.l	#PSAP_MAX_MODULE+1,d0
+	move.l	#MEMF_PUBLIC,d1
+	bsr	getmem
+	move.l	d0,sapModule(a5)
+	bne.b	.sap2
+	DPRINT	"ier_nomem"
+	moveq	#ier_nomem,d0
+	bra	sampleiik
+.sap2
+	* Read the whole file, one byte more than the library accepts
+	lea	fh1(a5),a0
+	move.l	modulefilename(a5),mfh_filename(a0)
+	bsr	_xopen
+	bne	.orok
+	move.l	sapModule(a5),d2
+	move.l	#PSAP_MAX_MODULE+1,d3
+	lea	fh1(a5),a0
+	bsr	_xread
+	move.l	d0,d7
+	lea	fh1(a5),a0
+	bsr	_xclose
+	tst.l	d7
+	ble	.orok
+	cmp.l	#PSAP_MAX_MODULE,d7
+	bhi	.sapbad
+
+	move.l	sapModule(a5),a0
+	move.l	d7,d0
+	move.l	modulefilename(a5),a1
+	lore	PlaySap,PSAP_Open
+	move.l	d0,sapHandle(a5)
+	beq	.sapbad
+	* The library keeps its own copy of the module
+	move.l	sapModule(a5),a0
+	clr.l	sapModule(a5)
+	bsr	freemem
+
+	move.l	sapHandle(a5),a0
+	lea	sapInfo(a5),a1
+	lore	PlaySap,PSAP_GetInfo
+
+	* Output rate, sampleforcerate overrides it
+	move	#PSAP_RATE,samplefreq(a5)
+	bsr	.freqcheck
+	moveq	#0,d0
+	move	samplefreq(a5),d0
+	move.l	sapHandle(a5),a0
+	lore	PlaySap,PSAP_SetSampleRate
+
+	cmp	#2,sapInfo+psi_channels(a5)
+	seq	samplestereo(a5)
+	st	samplebits(a5)
+
+	moveq	#0,d0
+	move	sapInfo+psi_defaultSong(a5),d0
+	bsr	sap_set_song
+	bsr	.moi_mp
+
+	moveq	#-1,d0
+	move.l	d0,sapSongRequest(a5)
+	move.l	d0,sapSeekRequest(a5)
+	st	saplippu(a5)
+	move.b	#2,sampleformat(a5)	* plays as AIFF, like MP3
+
+	move.l	samplebufsiz(a5),d0
+	lsl.l	#2,d0
+	move.l	#MEMF_PUBLIC!MEMF_CLEAR,d1
+	bsr	getmem
+	move.l	d0,samplework(a5)
+	bne	.sampleok
+	DPRINT	"ier_nomem"
+	moveq	#ier_nomem,d0
+	bra	sampleiik
+
+.sapbad
+	DPRINT	"playsap rejected the file"
+	moveq	#ier_not_compatible,d0
+	bra	sampleiik
 
 *********************************************************************
 * Init
@@ -1956,7 +2092,10 @@ prepareInfoLine:
 	lea	.t3(pc),a0
 
 
-.fr1	move.l	a0,d0
+.fr1	tst	saplippu(a5)
+	beq.b	.fr1s
+	lea	.tSap(pc),a0
+.fr1s	move.l	a0,d0
 
 	tst	mplippu(a5)
 	beq.b	.yi0
@@ -2060,6 +2199,7 @@ prepareInfoLine:
 .t1               dc.b    "IFF 8SVX",0
 .t2               dc.b    "AIFF",0
 .t3               dc.b    "WAV",0
+.tSap             dc.b    "SAP",0
 .t3midi           dc.b    "MIDI",0
 .t3ogg            dc.b    "Ogg",0
 .t4               dc.b    "MP",0
@@ -2514,6 +2654,12 @@ sampleiik:
 	lore	Exec,CloseLibrary
 	clr.l	_MPEGABase(a5)
 .x
+	move.l	_PlaySapBase(a5),d0
+	beq.b	.x2
+	move.l	d0,a1
+	lore	Exec,CloseLibrary
+	clr.l	_PlaySapBase(a5)
+.x2
  if DEBUG
     bsr     closeTimer
  endif
@@ -3203,6 +3349,11 @@ sample_code:
 ;	move.l	samplehandle(a5),d1
 ;	lore	Dos,Read	
 
+	tst	saplippu(a5)
+	beq.b	.em1s
+	bsr	read_sap
+	bra.b	.emm1
+.em1s
 	tst	mplippu(a5)
 	beq.b	.em1
 	lsr.l	#1,d3
@@ -3667,6 +3818,11 @@ wavread2
 ;	move.l	samplehandle(a5),d1
 ;	lore	Dos,Read	
 
+	tst	saplippu(a5)
+	beq.b	.em2s
+	bsr	read_sap
+	bra.b	.emm2
+.em2s
 	tst	mplippu(a5)
 	beq.b	.em2
 	lsr.l	#2,d3
@@ -5883,6 +6039,14 @@ read_mp
 
 
 mp_start
+	tst	saplippu(a5)
+	beq.b	.nosap
+	pushm	all
+	move.l	sapSong(a5),d0
+	bsr	sap_set_song
+	popm	all
+	rts
+.nosap
 	tst	mplippu(a5)
 	beq.b	.x
 	tst.l 	_MPEGABase(a5)
@@ -5909,6 +6073,15 @@ mp_start
 
 mp_close
 	pushm	all
+	move.l	sapHandle(a5),d0
+	beq.b	.nosh
+	move.l	d0,a0
+	clr.l	sapHandle(a5)
+	lore	PlaySap,PSAP_Close
+.nosh
+	move.l	sapModule(a5),a0
+	clr.l	sapModule(a5)
+	bsr	freemem
     move.l  id3v2Data(a5),a0
     clr.l   id3v2Data(a5)
     bsr     freemem
@@ -6096,6 +6269,8 @@ songoverr:
 closesample
 	pushm	all
 
+	tst	saplippu(a5)
+	bne.b	.c
 	tst	mplippu(a5)
 	bne.b	.c
 
@@ -6269,6 +6444,167 @@ initsamplecyber:
 ;;;    rts
 
 
+*********************************************************************
+* SAP via playsap.library
+*********************************************************************
+
+* In:
+*   d0 = subsong
+* Out:
+*   d0 = subsong duration in seconds, 0 if unknown
+sap_set_song
+	movem.l	d1-a6,-(sp)
+	move.l	d0,sapSong(a5)
+	lsl.l	#2,d0
+	lea	sapInfo+psi_durationMs(a5),a0
+	move.l	(a0,d0.l),d7
+	move.l	d7,d1		* -1 = own duration or loop forever
+	move.l	sapSong(a5),d0
+	move.l	sapHandle(a5),a0
+	lore	PlaySap,PSAP_SetSong
+	clr.l	sapPositionMs(a5)
+	move.l	d7,d0
+	bsr.b	sap_ms_to_secs
+	movem.l	(sp)+,d1-a6
+	rts
+
+* In:
+*   d0 = milliseconds
+* Out:
+*   d0 = seconds, 0 if d0 <= 0
+sap_ms_to_secs
+	tst.l	d0
+	bgt.b	.1
+	moveq	#0,d0
+	rts
+.1	cmp.l	#65535*1000,d0
+	bls.b	.2
+	move.l	#65535*1000,d0
+.2	divu	#1000,d0
+	and.l	#$ffff,d0
+	rts
+
+* Fills the sample buffer from playsap.library.
+* Applies subsong and seek requests from the host first.
+* In:
+*   d2 = destination
+*   d3 = bytes
+* Out:
+*   d0 = bytes rendered, less than d3 at song end
+read_sap
+	movem.l	d1-a6,-(sp)
+	move.l	sapSongRequest(a5),d0
+	bmi.b	.noSong
+	moveq	#-1,d1
+	move.l	d1,sapSongRequest(a5)
+	bsr	sap_set_song
+.noSong
+	move.l	sapSeekRequest(a5),d0
+	bmi.b	.noSeek
+	moveq	#-1,d1
+	move.l	d1,sapSeekRequest(a5)
+	move.l	sapHandle(a5),a0
+	lore	PlaySap,PSAP_Seek
+.noSeek
+	moveq	#0,d7		* restarted once already?
+.again
+	moveq	#0,d5		* bytes done
+.loop
+	move.l	d3,d0
+	sub.l	d5,d0
+	beq.b	.done
+	move.l	sapHandle(a5),a0
+	move.l	d2,a1
+	add.l	d5,a1
+	moveq	#PSAP_FMT_S16BE,d1
+	lore	PlaySap,PSAP_Render
+	tst.l	d0
+	ble.b	.end
+	add.l	d0,d5
+	bra.b	.loop
+.end
+	tst.l	d5
+	bne.b	.done
+	* Song ended exactly at a buffer boundary. A zero length
+	* read would stop the player, so signal song end here
+	* and restart the subsong. Only once, so a song that
+	* renders nothing cannot loop forever.
+	tst	d7
+	bne.b	.done
+	moveq	#1,d7
+	bsr	songoverr
+	move.l	sapSong(a5),d0
+	bsr	sap_set_song
+	bra.b	.again
+.done
+ if DEBUG
+	tst	sapRendered(a5)
+	bne.b	.d
+	st	sapRendered(a5)
+	move.l	d5,d0
+	DPRINT	"sap: render %ld"
+.d
+ endif
+	move.l	sapHandle(a5),a0
+	lore	PlaySap,PSAP_GetPosition
+	move.l	d0,sapPositionMs(a5)
+	move.l	d5,d0
+	movem.l	(sp)+,d1-a6
+	rts
+
+* Called from mp3GetDurationInSeconds with a5 = var_b
+* Out:
+*   d0 = position secs
+*   d1 = length secs, 0 if unknown
+sapGetDurationInSeconds
+	move.l	sapSong(a5),d0
+	lsl.l	#2,d0
+	lea	sapInfo+psi_durationMs(a5),a0
+	move.l	(a0,d0.l),d0
+	bsr	sap_ms_to_secs
+	move.l	d0,d1
+	move.l	sapPositionMs(a5),d0
+	bsr	sap_ms_to_secs
+	rts
+
+* Called from the host task.
+* Out:
+*   d0 = number of subsongs, 0 if not SAP
+*   d1 = default subsong
+sapGetSongs:
+	push	a5
+	lea	var_b,a5
+	moveq	#0,d0
+	moveq	#0,d1
+	tst	saplippu(a5)
+	beq.b	.x
+	move	sapInfo+psi_songs(a5),d0
+	move	sapInfo+psi_defaultSong(a5),d1
+.x	pop	a5
+	rts
+
+* Called from the host task.
+* The player task switches subsong at its next read.
+* In:
+*   d0 = subsong
+sapSetSong:
+	movem.l	d0-a6,-(sp)
+	lea	var_b,a5
+	tst	saplippu(a5)
+	beq.b	.x
+	cmp	sapInfo+psi_songs(a5),d0
+	bhs.b	.x
+	and.l	#$ffff,d0
+	DPRINT	"sapSetSong %ld"
+	move.l	d0,sapSongRequest(a5)
+	lsl.l	#2,d0
+	lea	sapInfo+psi_durationMs(a5),a0
+	move.l	(a0,d0.l),d0
+	bsr	sap_ms_to_secs
+	bsr	init\.moi_mp
+.x	movem.l	(sp)+,d0-a6
+	rts
+
 * Checks if mp3 can be seeked 
 isLocalMp3:
     tst.b   mplippu(a5)
@@ -6289,6 +6625,8 @@ mp3GetDurationInSeconds:
     lea     var_b,a5
     moveq   #0,d0
     moveq   #0,d1
+    tst     saplippu(a5)
+    bne     sapGetDurationInSeconds
     bsr     isLocalMp3
     beq     .x
     tst.b   mhiEnable(a5) 
@@ -6347,6 +6685,13 @@ mp3GetDurationInSeconds:
 *  d0 = position in seconds to seek
 mp3Seek:
     lea     var_b,a5
+    tst     saplippu(a5)
+    beq.b   .nosap
+    mulu.w  #1000,d0
+    DPRINT  "sapSeek %ld ms"
+    move.l  d0,sapSeekRequest(a5)
+    rts
+.nosap
     bsr     isLocalMp3
     beq     .x
     tst.b   mhiEnable(a5) 

@@ -831,6 +831,7 @@ SAMPLE_FORMAT_AIFF = 2
 SAMPLE_FORMAT_WAV  = 3
 SAMPLE_FORMAT_MP3  = 4
 SAMPLE_FORMAT_OGG  = 5
+SAMPLE_FORMAT_SAP  = 6
 sampleformat   rs.b    1
 
 
@@ -33415,6 +33416,15 @@ loadfile:
 	move.b	#SAMPLE_FORMAT_OGG,sampleformat(a5)
 	cmp.l	#"OggS",(a0)
 	beq	.sampl
+** SAP, played by playsap.library inside the sample player
+	cmp.l	#$5341500d,(a0)		* "SAP\r"
+	bne.b	.nosaaa
+	bsr	sapLibUsable
+	tst.l	d0
+	beq.b	.nosaaa
+	move.b	#SAMPLE_FORMAT_SAP,sampleformat(a5)
+	moveq	#0,d0
+	rts
 .nosaaa
 ** MPEG
 	move.b	#SAMPLE_FORMAT_MP3,sampleformat(a5)
@@ -45973,7 +45983,7 @@ p_sample:
 	jmp	.dostop(pc)		* Stop
 	jmp	.docont(pc)		* Cont
 	jmp	.vol(pc)		* volume
-	p_NOP	* Song
+	jmp	sampleSetSong(pc)	* Song
 	p_NOP	* Eteen
 	p_NOP	* Taakse
 	jmp	.ahiup(pc)		* AHI Update
@@ -45999,6 +46009,8 @@ p_sample:
 .s_getMp3Text      rs.l     1
 .s_getMp3Duration  rs.l     1    
 .s_mp3Seek         rs.l     1
+.s_sapGetSongs     rs.l     1
+.s_sapSetSong      rs.l     1
 
 
 .init:
@@ -46013,6 +46025,8 @@ p_sample:
     ; By default end can be detected
     lea     .flags(pc),a0
     or      #pf_end,(a0)
+    ; Subsongs only for SAP, set after init
+    and     #~pf_song,(a0)
 
 ** v‰litet‰‰n infoa
 
@@ -46198,6 +46212,22 @@ p_sample:
     and.w   #~pf_end,(a0)
     DPRINT  "Disable end detect"
 .notRadio
+
+    ; SAP subsongs
+    push    a5
+    move.l  sampleroutines(a5),a0
+    jsr     .s_sapGetSongs(a0)
+    pop     a5
+    tst     d0
+    beq     .noSongs
+    subq    #1,d0
+    move    d0,maxsongs(a5)
+    clr     minsong(a5)
+    move    d1,songnumber(a5)
+    lea     .flags(pc),a0
+    or      #pf_song,(a0)
+    bsr     whatgadgets
+.noSongs
 
     ; -------------------------------------
     ; Finished
@@ -46391,6 +46421,16 @@ getSampleDataAdd:
     bne     .1
     add.l   d0,d0
 .1  rts
+
+* Song change from the host, SAP only
+sampleSetSong:
+    push    a5
+    moveq   #0,d0
+    move    songnumber(a5),d0
+    move.l  sampleroutines(a5),a0
+    jsr     p_sample\.s_sapSetSong(a0)
+    pop     a5
+    rts
 
 * In: 
 *  d0 = position in secs
@@ -52587,13 +52627,9 @@ sapCmdLq     dc.b    '%s "%s" PIPE:wavHippoStream3/65536/2 SONG %ld RATE 22050 R
 vgmSapUsable:
     pushm   d1-d4/a0-a1/a6
     moveq   #0,d3
-    lea     sapLibName(pc),a1
-    moveq   #1,d0
-    lore    Exec,OpenLibrary
+    bsr     sapLibUsable
     tst.l   d0
     beq     .x
-    move.l  d0,a1
-    lob     CloseLibrary
     move.l  homelock(a5),d1
     beq     .x
     lore    Dos,CurrentDir
@@ -52609,6 +52645,22 @@ vgmSapUsable:
     lob     UnLock
 .x  move.l  d3,d0
     popm    d1-d4/a0-a1/a6
+    rts
+
+* Does playsap.library v1 open
+* Out:
+*   d0 = true or false
+sapLibUsable:
+    pushm   d1/a0-a1/a6
+    lea     sapLibName(pc),a1
+    moveq   #1,d0
+    lore    Exec,OpenLibrary
+    tst.l   d0
+    beq     .x
+    move.l  d0,a1
+    lob     CloseLibrary
+    moveq   #1,d0
+.x  popm    d1/a0-a1/a6
     rts
 
 sapLibName   dc.b    "playsap.library",0
