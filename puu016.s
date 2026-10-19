@@ -52319,7 +52319,7 @@ vgmInit0
     beq     .44
     pushpea pipe_mdx2wav(pc),d0
 .44
-    tst.b   vgmActuallySap(pc)
+    move.b  vgmActuallySap(pc),d1
     beq     .45
     * SAP descriptor has its own song parameter, take current track
     lea     sapTrackNumber(pc),a1
@@ -52372,7 +52372,7 @@ vgmInit0
     move.b  vgmActuallyMdx(pc),d0
     beq     .2
     lea     .msg2(pc),a1
-.2  tst.b   vgmActuallySap(pc)
+.2  move.b  vgmActuallySap(pc),d0
     beq     .3
     lea     .msg3(pc),a1
 .3  bra     commonStreamError
@@ -52453,7 +52453,7 @@ vgmInfoText:
     lea     .formMdx(pc),a0
     move.l  d2,d0
 .2
-    tst.b   vgmActuallySap(pc)
+    move.b  vgmActuallySap(pc),d3
     beq     .3
     * "SAP %ldch PLAYSAP %s": voices, then AHI info
     lea     .formSap(pc),a0
