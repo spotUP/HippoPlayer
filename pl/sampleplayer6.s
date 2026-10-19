@@ -1905,7 +1905,9 @@ init:
 	moveq	#0,d2			* pri
 	pushpea	sample_segment(pc),d3
 	lsr.l	#2,d3
-	move.l	#4000,d4
+	* playvgm.library needs 6144 bytes below its calls (playvgm.h STACK)
+	* plus this process's own frames; 4000 was sized for the other players.
+	move.l	#8192,d4
 	lore	Dos,CreateProc
     tst.l	d0
 	beq 	.error
