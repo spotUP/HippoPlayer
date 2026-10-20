@@ -418,6 +418,8 @@ newcpu
 
 	clr.b	songpos
 	clr.b	pattpos
+	clr.b	fetchsongpos
+	clr.b	fetchpattpos
 	clr.b	count
 	move.b	#6,temp
 
@@ -708,6 +710,8 @@ fast:		dc.b	0
 oldcpu:		dc.b	0
 songpos:	dc.b	0
 pattpos:	dc.b	0
+fetchsongpos:	dc.b	0
+fetchpattpos:	dc.b	0
 temp:		dc.b	0
 count:		dc.b	0
 jmpen:		dc.b	0
@@ -769,6 +773,7 @@ PatternInit
 	move.l	(sp)+,PI_Convert(a0)
 	move.w	#64,PI_Pattlength(a0)
 	clr.w	PI_Pattpos(a0)
+	clr.w	PI_Songpos(a0)
 	clr.w	PI_Speed(a0)		; periods
 	lea	PIStripes(pc),a2
 	lea	patstripes(pc),a1
@@ -778,20 +783,21 @@ PatternInit
 	dbf	d1,.is
 	rts
 
-* Called after each db_music tick. pattpos has already advanced past
-* the row that was just fetched, hence the -1.
+* Called after each db_music tick. Shows the row last fetched by db_music
+* and the pattern it was fetched from.
 PatternUpdate
 	movem.l	d0-d7/a0-a6,-(sp)
 	lea	PatternInfo(pc),a0
 	moveq	#0,d0
-	move.b	pattpos(pc),d0
-	subq.b	#1,d0
+	move.b	fetchpattpos(pc),d0
 	and.w	#63,d0
 	move.w	d0,PI_Pattpos(a0)
 
 	move.l	moddigi(pc),a5
 	moveq	#0,d7
-	move.b	songpos(pc),d7
+	move.b	fetchsongpos(pc),d7
+	* The scope redraws only when row or song position changes
+	move.w	d7,PI_Songpos(a0)
 	moveq	#0,d6
 	move.b	orders(a5,d7.w),d6
 	lsl.w	#2,d6
@@ -892,6 +898,12 @@ nonewpos:
 	clr.b	pattpos
 	move.l	pattadresses,a1
 norepeatsong:
+	* Remember which row of which position is fetched now. Effects on
+	* this tick (pattern break, position jump) change pattpos/songpos
+	* before the next fetch, so PatternUpdate must not derive the row
+	* from them.
+	move.b	songpos(pc),fetchsongpos
+	move.b	pattpos(pc),fetchpattpos
 
 	moveq	#0,d7
 	move.b	songpos(pc),d7
