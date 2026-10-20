@@ -1932,8 +1932,8 @@ progstart
 	move.l	d3,segment(a5)		* seuraavan hunkin pointteri
 	clr.l	(a0)
 ;	move.l	#4000,d4		* stacksize
-	* 5000 for HiP itself, plus 6144 that playvgm.library needs below
-	* its calls (libraries/playvgm.h STACK). The id_vgm check and the
+	* 5000 for HiP itself, plus 6144 that gme.library needs below
+	* its calls (libraries/gme.h STACK). The id_vgm check and the
 	* sample player's gmeOpen run on this process.
 	move.l	#5000+6144,d4		* stacksize
 	move.l	a4,a6
@@ -52443,7 +52443,7 @@ sapLibName   dc.b    "playsap.library",0
              even
 
 
-* Does playvgm.library v1 open
+* Does gme.library v1 open
 * Out:
 *   d0 = true or false
 gmeLibUsable:
@@ -52459,7 +52459,7 @@ gmeLibUsable:
 .x  popm    d1/a0-a1/a6
     rts
 
-gmeLibName   dc.b    "playvgm.library",0
+gmeLibName   dc.b    "gme.library",0
              even
 
 
@@ -52604,9 +52604,9 @@ id_mdx
 ******************************************************************************
 * GME
 * Game music formats (VGM, VGZ, GYM, AY, GBS, HES, KSS, NSF, NSFE, SPC) are
-* played by playvgm.library inside the sample player. The module is saved to
+* played by gme.library inside the sample player. The module is saved to
 * a temp file, which the sample player opens through the "gme:" file name
-* prefix. playvgm.library decides which files it plays (id_vgm).
+* prefix. gme.library decides which files it plays (id_vgm).
 ******************************************************************************
 
 p_vgm:
@@ -52704,8 +52704,8 @@ vgmDeleteTempFile
     pushpea vgmTempFile(pc),d1
     bra     deleteTempFile
 
-* Asks playvgm.library whether it plays this file.
-* LVO PVGM_IsOurFile = -84, libraries/playvgm.h, sfd/playvgm_lib.sfd
+* Asks gme.library whether it plays this file.
+* LVO GME_IsOurFile = -84, libraries/gme.h, sfd/gme_lib.sfd
 * In:
 *   a4 = probebuffer or module
 *   modulefilename(a5) = file name
@@ -52738,7 +52738,7 @@ id_vgm
     bls.b   .lenOk
     move.l  modulelength(a5),d0
 .lenOk
-    jsr     -84(a6)    * PVGM_IsOurFile
+    jsr     -84(a6)    * GME_IsOurFile
     move.l  d0,d2
     move.l  a6,a1
     lore    Exec,CloseLibrary

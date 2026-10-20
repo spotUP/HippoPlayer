@@ -235,21 +235,21 @@ psi_songs       = 4
 psi_defaultSong = 6
 psi_durationMs  = 8
 psi_SIZEOF      = 460
-****************** playvgm library, see playvgm.library sfd/playvgm_lib.sfd
-_LVOPVGM_Open           =   -30
-_LVOPVGM_Close          =   -36
-_LVOPVGM_GetInfo        =   -42
-_LVOPVGM_SetSong        =   -48
-_LVOPVGM_Render         =   -54
-_LVOPVGM_Seek           =   -60
-_LVOPVGM_GetPosition    =   -66
-_LVOPVGM_SetSampleRate  =   -78
-PVGM_FMT_S16BE  = 2
-PVGM_RATE       = 22050
-* playvgm.library runs on the caller's stack and needs this much free
-* below each call (libraries/playvgm.h STACK).
-PVGM_STACK      = 6144
-* struct PVGMInfo, include/libraries/playvgm.h. WORD and LONG are 2-aligned.
+****************** gme.library, see gme.library sfd/gme_lib.sfd
+_LVOGME_Open           =   -30
+_LVOGME_Close          =   -36
+_LVOGME_GetInfo        =   -42
+_LVOGME_SetSong        =   -48
+_LVOGME_Render         =   -54
+_LVOGME_Seek           =   -60
+_LVOGME_GetPosition    =   -66
+_LVOGME_SetSampleRate  =   -78
+GME_FMT_S16BE  = 2
+GME_RATE       = 22050
+* gme.library runs on the caller's stack and needs this much free
+* below each call (libraries/gme.h STACK).
+GME_STACK      = 6144
+* struct GMEInfo, include/libraries/gme.h. WORD and LONG are 2-aligned.
 * version 0, channels 2, songs 4, defaultSong 6, durationMs[256] 8..1031,
 * loop[256] 1032..1287, title 1288, author 1416, date 1544, ntsc 1576,
 * pad 1578, system 1580, game 1644, copyright 1772, end 1900.
@@ -380,7 +380,7 @@ tword	macro
 	ULONG	mfh_fh		;(must be the first item!!)
 	UWORD	mfh_is_xpk	;if non-zero then XPK
 	UWORD	mfh_is_sap	;if non-zero then playsap.library, mfh_fh is the PSAP handle
-	UWORD	mfh_is_gme	;if non-zero then playvgm.library, mfh_fh is the PVGM handle
+	UWORD	mfh_is_gme	;if non-zero then gme.library, mfh_fh is the GME handle
 	ULONG	mfh_filepos	;XPK only - position in file
 	APTR	mfh_xbuff	;XPK only - address of decrunch buffer
 	ULONG	mfh_xbuffsize	;XPK only - size of decrunch buffer (=XPK chunksize)
@@ -514,9 +514,9 @@ sapPositionMs    rs.l    1
 saplippu         rs      1   * SAP mode on
 sapRendered      rs      1
 sapInfo          rs.b    psi_SIZEOF
-_PlayVgmBase     rs.l    1
-gmeHandle        rs.l    1   * PVGM handle
-gmeModule        rs.l    1   * module buffer, freed after PVGM_Open
+_GmeBase     rs.l    1
+gmeHandle        rs.l    1   * GME handle
+gmeModule        rs.l    1   * module buffer, freed after GME_Open
 gmeSong          rs.l    1   * current subsong
 gmeSongRequest   rs.l    1   * subsong asked by host, -1 = none
 gmeSeekRequest   rs.l    1   * seek in ms asked by host, -1 = none
@@ -607,7 +607,7 @@ sample_segment
 
 mpegaName	dc.b	"mpega.library",0
 playsapName	dc.b	"playsap.library",0
-playvgmName	dc.b	"playvgm.library",0
+gmeName	dc.b	"gme.library",0
  even
 
  if DEBUG
@@ -1958,7 +1958,7 @@ init:
 	moveq	#0,d2			* pri
 	pushpea	sample_segment(pc),d3
 	lsr.l	#2,d3
-	* playvgm.library needs PVGM_STACK bytes below its calls
+	* gme.library needs GME_STACK bytes below its calls
 	* plus this process's own frames; 4000 was sized for the other players.
 	move.l	#8192,d4
 	lore	Dos,CreateProc
@@ -2235,7 +2235,7 @@ isSapName:
     rts
 
 
-* Is the file name "gme:<path>", a module played through playvgm.library.
+* Is the file name "gme:<path>", a module played through gme.library.
 * In:
 *   a0 = file name
 * Out:
@@ -2684,11 +2684,11 @@ sampleiik:
 	lore	Exec,CloseLibrary
 	clr.l	_PlaySapBase(a5)
 .x2
-	move.l	_PlayVgmBase(a5),d0
+	move.l	_GmeBase(a5),d0
 	beq.b	.x3
 	move.l	d0,a1
 	lore	Exec,CloseLibrary
-	clr.l	_PlayVgmBase(a5)
+	clr.l	_GmeBase(a5)
 .x3
  if DEBUG
     bsr     closeTimer
@@ -6776,7 +6776,7 @@ sapSetSong:
 	rts
 
 *********************************************************************
-* GME via playvgm.library
+* GME via gme.library
 * Uses sap_ms_to_secs for the millisecond conversion.
 *********************************************************************
 
@@ -6793,14 +6793,14 @@ gme_set_song
 	move.l	d7,d1		* -1 = own duration or loop forever
 	move.l	gmeSong(a5),d0
 	move.l	gmeHandle(a5),a0
-	lore	PlayVgm,PVGM_SetSong
+	lore	Gme,GME_SetSong
 	clr.l	gmePositionMs(a5)
 	move.l	d7,d0
 	bsr	sap_ms_to_secs
 	movem.l	(sp)+,d1-a6
 	rts
 
-* Fills the sample buffer from playvgm.library.
+* Fills the sample buffer from gme.library.
 * Applies subsong and seek requests from the host first.
 * In:
 *   d2 = destination
@@ -6820,7 +6820,7 @@ read_gme
 	moveq	#-1,d1
 	move.l	d1,gmeSeekRequest(a5)
 	move.l	gmeHandle(a5),a0
-	lore	PlayVgm,PVGM_Seek
+	lore	Gme,GME_Seek
 .noSeek
 	moveq	#0,d7		* restarted once already?
 .again
@@ -6832,8 +6832,8 @@ read_gme
 	move.l	gmeHandle(a5),a0
 	move.l	d2,a1
 	add.l	d5,a1
-	moveq	#PVGM_FMT_S16BE,d1
-	lore	PlayVgm,PVGM_Render
+	moveq	#GME_FMT_S16BE,d1
+	lore	Gme,GME_Render
 	tst.l	d0
 	ble.b	.end
 	add.l	d0,d5
@@ -6862,7 +6862,7 @@ read_gme
 .d
  endif
 	move.l	gmeHandle(a5),a0
-	lore	PlayVgm,PVGM_GetPosition
+	lore	Gme,GME_GetPosition
 	move.l	d0,gmePositionMs(a5)
 	move.l	d5,d0
 	movem.l	(sp)+,d1-a6
@@ -6921,9 +6921,9 @@ gmeSetSong:
 .x	movem.l	(sp)+,d0-a6
 	rts
 
-* Open "gme:<path>" through playvgm.library. Called from _xopen.
-* The file after the prefix is loaded into memory for PVGM_Open.
-* Output is always 16-bit stereo big-endian at PVGM_RATE.
+* Open "gme:<path>" through gme.library. Called from _xopen.
+* The file after the prefix is loaded into memory for GME_Open.
+* Output is always 16-bit stereo big-endian at GME_RATE.
 * In:
 *   a4 = myFH, mfh_filename = "gme:<path>"
 * Out:
@@ -6938,17 +6938,17 @@ gmeOpen
 	move.l	sp,d0
 	sub.l	TC_SPLOWER(a0),d0
 	DPRINT	"gme: stack free %ld"
-	cmp.l	#PVGM_STACK,d0
+	cmp.l	#GME_STACK,d0
 	blo	.fail
 	move.l	4.w,a6
-	tst.l	_PlayVgmBase(a5)
+	tst.l	_GmeBase(a5)
 	bne.b	.lib
-	lea	playvgmName(pc),a1
+	lea	gmeName(pc),a1
 	moveq	#1,d0
 	lob	OpenLibrary
-	move.l	d0,_PlayVgmBase(a5)
+	move.l	d0,_GmeBase(a5)
 	bne.b	.lib
-	DPRINT	"no playvgm"
+	DPRINT	"no gme.library"
 	bra	.fail
 .lib
 	lea	fh2(a5),a0
@@ -6987,7 +6987,7 @@ gmeOpen
 	move.l	d7,d0
 	move.l	mfh_filename(a4),a1
 	addq.l	#4,a1
-	lore	PlayVgm,PVGM_Open
+	lore	Gme,GME_Open
 	move.l	d0,gmeHandle(a5)
 	beq	.bad
 	* The library keeps its own copy of the module
@@ -6997,12 +6997,12 @@ gmeOpen
 
 	move.l	gmeHandle(a5),a0
 	lea	gmeInfo(a5),a1
-	lore	PlayVgm,PVGM_GetInfo
+	lore	Gme,GME_GetInfo
 
 	* SetSampleRate comes before SetSong
-	move.l	#PVGM_RATE,d0
+	move.l	#GME_RATE,d0
 	move.l	gmeHandle(a5),a0
-	lore	PlayVgm,PVGM_SetSampleRate
+	lore	Gme,GME_SetSampleRate
 
 	moveq	#0,d0
 	move	gmeInfo+pvi_defaultSong(a5),d0
@@ -7021,13 +7021,13 @@ gmeOpen
 	lea	fh2(a5),a0
 	bsr	_xclose
 .bad
-	DPRINT	"playvgm rejected the file"
+	DPRINT	"gme.library rejected the file"
 	bsr	gme_close
 .fail
 	moveq	#-1,d0
 	rts
 
-* Close the playvgm.library handle and free the module buffer.
+* Close the gme.library handle and free the module buffer.
 * Safe to call several times.
 gme_close
 	pushm	all
@@ -7036,7 +7036,7 @@ gme_close
 	beq.b	.nogh
 	move.l	d0,a0
 	clr.l	gmeHandle(a5)
-	lore	PlayVgm,PVGM_Close
+	lore	Gme,GME_Close
 .nogh
 	move.l	gmeModule(a5),a0
 	clr.l	gmeModule(a5)
