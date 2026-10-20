@@ -31232,8 +31232,16 @@ noteScroller2:
 * Use value as an index
 .notPeriod
 	move	d0,d5
-	* indices start from 1
-	subq	#1,d5
+	* PI_Speed = -(base index): -1 means index 1 = C-1.
+	* d5 = index relative to C-1, 0 = C-1
+	add	PI_Speed(a1),d5
+	* allow notes down to C-0, anything lower is unknown
+	add	#12,d5
+	bmi	.unknown
+	divu	#12,d5
+	moveq	#'0',d0
+	* octave number is the quotient already
+	bra.b	.addOctave
 .found
 	* print note
 	* divide to get octave
@@ -31242,6 +31250,7 @@ noteScroller2:
 	moveq	#'0',d0
 	* first octave shall be 1, not 0
 	addq.b	#1,d5
+.addOctave
 	add.b	d5,d0
 	* convert note into text
 	swap 	d5

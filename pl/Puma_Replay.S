@@ -772,7 +772,7 @@ PatternInit
 	move.l	(sp)+,PI_Convert(a0)
 	move.w	#PUMA_ROWS,PI_Pattlength(A0)
 	clr.w	PI_Pattpos(A0)
-	move	#-1,PI_Speed(a0)	; Magic! Indicates notes, not periods
+	move	#-37,PI_Speed(a0)	; Magic! Notes, not periods; index 37 = C-1
 	lea	PumaDecoded(pc),a1
 	move.w	#-1,(a1)
 	lea	PumaRows(pc),a1
@@ -880,6 +880,7 @@ ConvertNote
 	moveq	#0,D2		; Command
 	moveq	#0,D3		; Command argument
 	move.b	(a0),d0
+	lsr	#1,d0		; note byte is a word offset into the period table
 	move.b	1(a0),d1
 	move.b	2(a0),d2
 	move.b	3(a0),d3
