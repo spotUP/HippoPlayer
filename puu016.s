@@ -1309,6 +1309,10 @@ favorites	rs.b	1
 tooltips	rs.b  	1
 savestate	rs.b    1
 altbuttons  rs.b    1
+* Effective big buttons state resolved from altbuttons and the screen,
+* 0 = normal buttons, $ff = big buttons. See resolveBigButtons.
+bigButtons  rs.b    1
+            rs.b    1   * pad
 autosort	= prefsdata+prefs_autosort
 
 * Runtime scope settings
@@ -5014,7 +5018,7 @@ avaa_ikkuna:
 	move	d3,gg_Height(a3)
 	subq	#3,gg_Height(a3)
 
-    tst.b   altbuttons(a5)
+    tst.b   bigButtons(a5)
     beq     .noAlt1
     subq    #7,gg_Height(a3)
 .noAlt1
@@ -5056,8 +5060,66 @@ avaa_ikkuna:
 
 
 
+* altbuttons values: 0 = No, $ff = Yes, BIGBUTTONS_AUTO = Auto.
+* Old prefs files only have 0 and $ff.
+BIGBUTTONS_AUTO = 1
+
+* Resolve the effective button size into bigButtons.
+* Auto picks big buttons on screens with square pixels
+* (eg. 640x512 or RTG) and normal buttons on screens with
+* tall pixels (eg. 640x256).
+* in:
+*   a0 = screen, or NULL if not known
+resolveBigButtons
+	pushm	all
+	move.b	altbuttons(a5),d0
+	cmp.b	#BIGBUTTONS_AUTO,d0
+	bne.b	.set
+	moveq	#0,d0			* fallback: normal buttons
+	move.l	a0,d1
+	beq.b	.set
+	lea	sc_ViewPort(a0),a0
+	lore	GFX,GetVPModeID
+	move.l	d0,d2			* display id
+	moveq	#0,d0
+	moveq	#-1,d1			* INVALID_ID
+	cmp.l	d1,d2
+	beq.b	.set
+	lea	-dis_SIZEOF(sp),sp
+	sub.l	a0,a0			* no handle, use the id in d2
+	move.l	sp,a1
+	move.l	#dis_SIZEOF,d0
+	move.l	#DTAG_DISP,d1
+	lob	GetDisplayInfoData
+	movem	dis_Resolution(sp),d1/d2	* ticks per pixel x, y
+	lea	dis_SIZEOF(sp),sp
+	tst.l	d0
+	beq.b	.normal
+	* Tall pixels when a pixel takes more ticks vertically
+	cmp	d1,d2
+	bhi.b	.normal
+	st	d0
+	bra.b	.set
+.normal
+	moveq	#0,d0
+.set
+	tst.b	d0
+	sne	d0
+	move.b	d0,bigButtons(a5)
+ if DEBUG
+	ext.w	d0
+	ext.l	d0
+	DPRINT	"bigButtons=%ld"
+ endif
+	popm	all
+	rts
+
 getscreeninfo
 	st	gotscreeninfo(a5)
+
+	* Resolve without a screen first, kick 1.3 stops at that
+	sub.l	a0,a0
+	bsr	resolveBigButtons
 
 *** Selvitetään ikkunan näytön ominaisuudet
 *** Uusi kick 
@@ -5101,6 +5163,7 @@ getscreeninfo
 	move.l	d0,a0
 
 	move.l	d0,screenaddr(a5)
+	bsr	resolveBigButtons
 	move	sc_Width(a0),wbleveys(a5)	* Näytön leveys
 	move	sc_Height(a0),wbkorkeus(a5)	* Näytön korkeus
 	clr	windowtop(a5)
@@ -13928,7 +13991,7 @@ loadprefs2
 	move.l	#1005,d2
 	lob	Open
 	move.l	d0,d4
-	beq	.nope
+	beq	.nofile
 	lea	prefsdata(a5),a0
 	move.l	a0,d2
 	move.l	d0,d1
@@ -14061,6 +14124,11 @@ loadprefs2
 	move.l	d4,d1
 	lob	Close	
 .nope
+	rts
+
+.nofile
+	* No prefs file: pick the button size from the screen
+	move.b	#BIGBUTTONS_AUTO,altbuttons(a5)
 	rts
 
 .eeee	
@@ -15343,9 +15411,15 @@ exprefs	move.l	_IntuiBase(a5),a6
 	move.b	tooltips_new(a5),tooltips(a5)
 	move.b	savestate_new(a5),savestate(a5)
 
-	move.b	altbuttons(a5),d0
 	move.b	altbuttons_new(a5),altbuttons(a5)
-	cmp.b	altbuttons(a5),d0
+	move.b	bigButtons(a5),d0
+	sub.l	a0,a0
+	tst.l	windowbase(a5)
+	beq.b	.noScr
+	move.l	screenaddr(a5),a0
+.noScr
+	bsr	resolveBigButtons
+	cmp.b	bigButtons(a5),d0
 	beq.b	.1
 	DPRINT	"Alt buttons changed"
 	* magic! causes reopening of the main window:
@@ -17505,13 +17579,36 @@ psavestate
 	bra	tickaa
 
 ********* Alt buttons
+* Cycle No -> Yes -> Auto
 raltbuttons
-	not.b	altbuttons_new(a5)
+	move.b	altbuttons_new(a5),d0
+	beq.b	.yes
+	cmp.b	#BIGBUTTONS_AUTO,d0
+	beq.b	.no
+	move.b	#BIGBUTTONS_AUTO,d0
+	bra.b	.r
+.yes	st	d0
+	bra.b	.r
+.no	moveq	#0,d0
+.r	move.b	d0,altbuttons_new(a5)
 
 paltbuttons
+	lea	.l1(pc),a0
 	move.b	altbuttons_new(a5),d0
-	lea	prefsAltButtons,a0
-	bra	tickaa
+	beq.b	.1
+	lea	.l3(pc),a0
+	cmp.b	#BIGBUTTONS_AUTO,d0
+	beq.b	.1
+	lea	.l2(pc),a0
+.1
+	lea	prefsAltButtons,a1
+	bra	prunt
+
+.l0	dc.b	4,3 * width, height
+.l1	dc.b	"No",0
+.l2	dc.b	"Yes",0
+.l3	dc.b	"Auto",0
+ even
 
 
 ********* Autosort
@@ -35897,7 +35994,7 @@ setListModeChangeButtonIconNoRefresh:
 .set
 	* Toggle listmode button icon
     move.w  #7,ig_Height+gadgetListModeChangeButtonImage
-    tst.b   altbuttons(a5)
+    tst.b   bigButtons(a5)
     beq     .66
     move.l  a1,a0
     move.w  #7*2,ig_Height+gadgetListModeChangeButtonImage
@@ -58322,7 +58419,7 @@ verticalLayout:
 	move	d0,buttonRow1TopEdge(a5)
 
 	moveq	#13,d1
-	tst.b	altbuttons(a5)
+	tst.b	bigButtons(a5)
 	beq.b	.norm1
 	add		d1,d1
 .norm1
@@ -58337,7 +58434,7 @@ verticalLayout:
 
 	* Height is either normal or double
 	moveq	#13,d1
-	tst.b	altbuttons(a5)
+	tst.b	bigButtons(a5)
 	beq.b	.norm2
 	add		d1,d1
 .norm2
@@ -58372,7 +58469,7 @@ verticalLayout:
 	move	d0,gg_TopEdge(a0)
 
     move    #13,gg_Height(a0)   * Large mode button
-    tst.b   altbuttons(a5)
+    tst.b   bigButtons(a5)
     beq     .noAlt1
     addq    #7,gg_Height(a0)    * Normal mode button
 .noAlt1
@@ -58472,7 +58569,7 @@ verticalLayout:
 
 .setImage
 	move.l	gg_GadgetRender(a0),a6
-	tst.b	altbuttons(a5)
+	tst.b	bigButtons(a5)
 	bne.b	.useLarge
 	move.l	a1,ig_ImageData(a6)
 	move	#8,ig_Height(a6)
@@ -66430,18 +66527,18 @@ prefsTooltipstx
 
 prefsAltButtons 
        dc.l prefsScopeSize
-       dc.w 214,107+14-28,28,12,3,1,1
+       dc.w 214-24,107+14-28,28+24,12,3,1,1
        dc.l 0
        dc.l 0,prefsAltButtonst,0,0
        dc.w 0
        dc.l 0
 prefsAltButtonst        dc.b 1,0,1,0
-       dc.w -198,2
+       dc.w -198+24,2
        dc.l 0,prefsAltButtonstx,0
 prefsAltButtonstx 
       ;dc.b "Bizarre buttons.........",0
       ;dc.b "Unconventional buttons..",0
-       dc.b "Big buttons.............",0
+       dc.b "Big buttons..........",0
 
 prefsBarsText
 	dc.b	"Bars",0
