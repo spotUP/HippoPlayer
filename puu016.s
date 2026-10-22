@@ -20279,8 +20279,6 @@ inforivit_clear_2ndrow:
 	movem.l	(sp)+,d0-d4/a0
 	rts
 
-inforivit_killerps3m
-	lea	var_b,a5
 *******************************************************************************
 * Common tail after a module was loaded and p_init succeeded:
 * start the play timer, look up the song length, mark playing,
@@ -20294,6 +20292,8 @@ moduleStarted:
 	jsr	genreModuleStarted
 	jmp	start_info
 
+inforivit_killerps3m
+	lea	var_b,a5
 inforivit_play:
 	bsr.b	inforivit_clear
 	tst.l	playingmodule(a5)
