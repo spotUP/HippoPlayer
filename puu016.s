@@ -1635,7 +1635,7 @@ genreTask           rs.l      1 * HiP-genre process, set by the process itself
 genreCache          rs.l      1 * cache file contents, NULL if none
 genreCacheLength    rs.l      1
 genreSize           rs.l      1 * decrunched module length for the request
-genreSignal         rs.b      1 * signalled by HiP-genre when it is done
+genreDonePending    rs.b      1 * set by HiP-genre when it is done, before it raises uiRefreshSignal
 genreRunning        rs.b      1 * <>0: HiP-genre is running
 genrePending        rs.b      1 * <>0: genreNextUrl waits for the running request
 genreResultValid    rs.b      1 * <>0: genreResult holds a server answer
@@ -2850,8 +2850,6 @@ main:
 	move.b	d0,rawKeySignal(a5)
 	bsr	getsignal
 	move.b	d0,tooltipSignal(a5)
-	bsr	getsignal
-	move.b	d0,genreSignal(a5)
 
 	* Do all kinds of adjustments to gadgets
 
@@ -3378,8 +3376,6 @@ msgloop
 	bset	d1,d0
 	move.b	tooltipSignal(a5),d1
 	bset	d1,d0
-	move.b	genreSignal(a5),d1
-	bset	d1,d0
 	move.b	hippoport+MP_SIGBIT(a5),d1 * oman viestiportin bitti
 	bset	d1,d0
 
@@ -3570,10 +3566,12 @@ msgloop
 	bsr		handlePosUpdateSignal
 .noSig4
 	
-	* Genre lookup done signal check
-	move.b	genreSignal(a5),d3
-	btst	d3,d0
+	* Genre lookup done check. HiP-genre has no signal bit of its own,
+	* as the main task has few free bits left: it sets
+	* genreDonePending and raises uiRefreshSignal to wake us up.
+	tst.b	genreDonePending(a5)
 	beq.b	.noGenreSignal
+	clr.b	genreDonePending(a5)
 	push	d0
 	jsr	genreDone
 	pop	d0
@@ -3811,8 +3809,6 @@ exit
 	move.b	rawKeySignal(a5),d0
 	bsr	freesignal
 	move.b	tooltipSignal(a5),d0
-	bsr	freesignal
-	move.b	genreSignal(a5),d0
 	bsr	freesignal
 
 	move.l	fontbase(a5),d0
@@ -63079,9 +63075,10 @@ genreEntry:
     lore    Exec,Forbid
     clr.l   genreTask(a5)
     clr.b   genreRunning(a5)
+    st      genreDonePending(a5)
     move.l  owntask(a5),a1
     moveq   #0,d0
-    move.b  genreSignal(a5),d1
+    move.b  uiRefreshSignal(a5),d1
     bset    d1,d0
     lob     Signal
     rts
