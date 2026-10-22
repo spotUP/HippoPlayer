@@ -1670,6 +1670,8 @@ voteKey             rs.b      6 * key of the playing module
 voteReqKey          rs.b      6 * key of the running vote request
 voteNextKey         rs.b      6 * key of the waiting vote request
 voteNextUrl         rs.b      1024 * request URL of the waiting vote request
+voteIconShown       rs.b      1 * <>0: the thumbs-up icon is drawn in the main window
+infoBoxShowsModule  rs.b      1 * <>0: the info box shows the playing module, not a message
 
  if DEBUG
 debugDesBuf		rs.b	1000
@@ -3218,6 +3220,14 @@ main:
 	jsr	inforivit_clear
 	jsr	importFavoriteModulesFromDisk
 	jsr	initializeUHC
+	* The info box clip leaves room for the vote icon only with UHC,
+	* which is known only now, after the window was opened
+	tst.l	infoBoxRegion(a5)
+	beq.b	.voteRegion
+	pushm	all
+	jsr	createInfoBoxRegion
+	popm	all
+.voteRegion
 
 	DPRINT	"Loading group"
 
@@ -7707,6 +7717,12 @@ buttonspressed:
 	sub	windowleft(a5),d0
 	sub	windowtop(a5),d1	* suhteutus fonttiin
 
+	* Vote icon at the right end of the box toggles the vote
+	jsr	voteIconHit
+	beq.b	.noVoteIcon
+	jmp	voteCurrent
+.noVoteIcon
+
 	cmp	#7+WINX,d0
 	blo.b	.x
 	cmp	#70+WINX,d0	* 247
@@ -7820,6 +7836,8 @@ modinfoaaa
 	beq	.start
     jmp	sulje_info
 .start
+    * About was shown: fresh vote count for the module info
+    jsr voteRead
     jmp start_info
 
 .zz	
@@ -20283,6 +20301,8 @@ execuutti
 * 30 merkkiä leveä alue
 
 inforivit_clear:
+	clr.b	infoBoxShowsModule(a5)
+	clr.b	voteIconShown(a5)
 	movem.l	d0-d4,-(sp)
 	moveq	#7+WINX,d0
 	move	infoBoxTopEdge(a5),d1
@@ -20475,6 +20495,12 @@ inforivit_play:
 .cep	move.b	(a2)+,(a1)+
 	bne.b	.cep
 	clr.b	(a1)
+
+	* The module name is printed, add the vote icon next to it.
+	* putinfo also prints through bipb, but shows a message: no icon.
+	bsr.b	bipb
+	st	infoBoxShowsModule(a5)
+	jmp	voteDrawIcon
 
 bipb
     jsr     initInfoScroller            ; all regs preserved
@@ -22186,6 +22212,10 @@ rbutton10b
 	tst.l	d0
 	beq.b	.n
 	addq	#1,info_prosessi(a5)
+	* Module info opens: ask for its vote count
+	tst.b	infolag(a5)
+	bne.b	.n
+	jsr	voteRead
 .n	movem.l	(sp)+,d0-a6
 .x	rts
 
@@ -57859,7 +57889,7 @@ createInfoBoxRegion
 	bsr		disposeInfoBoxRegion
 	lore	GFX,NewRegion
 	move.l	d0,infoBoxRegion(a5)
-	beq.b	.x
+	beq	.x
 
 	lea	-ra_SIZEOF(sp),sp
 	move.l	sp,a1
@@ -57881,7 +57911,30 @@ createInfoBoxRegion
 	move	d1,ra_MinY(a1)
 	move	d2,ra_MaxX(a1)
 	move	d3,ra_MaxY(a1)
-	
+
+	* With UHC the vote icon sits at the right end of row 1.
+	* Row 1 stops left of it so a long name never runs under it,
+	* the rest of the box keeps the full width.
+	tst.b	uhcAvailable(a5)
+	beq.b	.full
+	movem.l	d0-d3,-(sp)
+	add	listFontHeight(a5),d1
+	move	d1,ra_MaxY(a1)
+	jsr	voteIconPos
+	add	windowleft(a5),d0
+	subq	#3,d0
+	move	d0,ra_MaxX(a1)
+	move.l	infoBoxRegion(a5),a0
+	lore	GFX,OrRectRegion
+	movem.l	(sp)+,d0-d3
+	move.l	sp,a1
+	add	listFontHeight(a5),d1
+	addq	#1,d1
+	move	d0,ra_MinX(a1)
+	move	d1,ra_MinY(a1)
+	move	d2,ra_MaxX(a1)
+	move	d3,ra_MaxY(a1)
+.full
 	move.l	infoBoxRegion(a5),a0
 	lob	OrRectRegion
 	lea	ra_SIZEOF(sp),sp
@@ -63147,17 +63200,152 @@ voteModuleStarted:
     bsr     voteCacheGet
     move.b  d0,voteYours(a5)
 .x
-    bsr     voteStateChanged
+    * moduleStarted refreshes the info window right after this,
+    * so only the icon here, and the votes for an open info window
+    bsr     voteDrawIcon
+    tst     info_prosessi(a5)
+    beq.b   .y
+    tst.b   infolag(a5)
+    bne.b   .y
+    bsr     voteRead
+.y
     popm    all
     rts
 
-* Called whenever voteKeyValid, voteYours or voteCount changes.
-* H5 plugs in here: redraw the thumbs-up icon in the main window
-* from voteKeyValid (show it at all) and voteYours (0 outline, 5 filled).
-* H6 plugs in here: refresh the "Votes:" line of an open info window
-* from voteCount (-1 = unknown) and voteYours.
-* Main task only. All registers are preserved by the callers.
+* Called when a vote answer changed voteYours or voteCount of the
+* playing module: redraws the thumbs-up icon and the "Votes:" line
+* of an open module info window.
+* Main task only. All registers preserved.
 voteStateChanged:
+    bsr     voteDrawIcon
+    bra     voteInfoRefresh
+
+* Asks an open module info window to redraw, for its Votes line.
+* The same signal start_info sends, but never opens the window.
+voteInfoRefresh:
+    cmp     #33,info_prosessi(a5)
+    blo.b   .x
+    tst.b   infolag(a5)
+    bne.b   .x
+    pushm   d0/d1/a0/a1/a6
+    move.l  info_task(a5),a1
+    move.l  #SIGBREAKF_CTRL_D,d0
+    lore    Exec,Signal
+    popm    d0/d1/a0/a1/a6
+.x  rts
+
+VOTE_ICON_W = 10        * glyph width
+VOTE_ICON_H = 8         * glyph height, fits topaz 8
+
+* Position of the vote icon in window coordinates: right end of info
+* box row 1, centred on the row. Follows WINSIZX and the list font,
+* so it is computed on every use.
+* out:
+*   d0 = x
+*   d1 = y
+*   d2 = height, VOTE_ICON_H or listFontHeight when that is smaller
+voteIconPos:
+    moveq   #0,d0
+    move    WINSIZX(a5),d0
+    sub     #10+1+VOTE_ICON_W,d0
+    moveq   #VOTE_ICON_H,d2
+    cmp     listFontHeight(a5),d2
+    bls.b   .1
+    move    listFontHeight(a5),d2
+.1  moveq   #0,d1
+    move    listFontHeight(a5),d1
+    sub     d2,d1
+    lsr     #1,d1
+    add     infoBoxTopEdge(a5),d1
+    addq    #1,d1
+    rts
+
+* Draws the thumbs-up icon at the right end of info box row 1:
+* outline = not liked, filled = liked. Erases it when the playing
+* module has no key. Only while the box shows the playing module
+* (inforivit_play), never over a message. Guards as in print.
+* All registers preserved.
+voteDrawIcon:
+    pushm   all
+    tst.b   win(a5)
+    beq     .x
+    tst.b   kokolippu(a5)
+    beq     .x
+    tst.b   uhcAvailable(a5)
+    beq     .x
+    tst.b   infoBoxShowsModule(a5)
+    beq     .x
+    lea     voteIconBlank,a2
+    clr.b   voteIconShown(a5)
+    tst.b   voteKeyValid(a5)
+    beq.b   .draw
+    st      voteIconShown(a5)
+    lea     voteIconOutline,a2
+    tst.b   voteYours(a5)
+    beq.b   .draw
+    lea     voteIconFilled,a2
+.draw
+    bsr     voteIconPos
+    * a font lower than the glyph cuts rows from the top
+    moveq   #VOTE_ICON_H,d3
+    sub     d2,d3
+    add     d3,d3
+    add     d3,a2
+    move.l  d0,d6
+    add     windowleft(a5),d6
+    move.l  d1,d7
+    add     windowtop(a5),d7
+    move.l  d2,d5
+    move.l  rastport(a5),a4
+    move.l  a4,a1
+    moveq   #RP_JAM2,d0         * PenA where set, PenB where not
+    lore    GFX,SetDrMd
+    move.l  a4,a1
+    move.l  pen_1(a5),d0
+    lob     SetAPen
+    move.l  a4,a1
+    move.l  pen_0(a5),d0
+    lob     SetBPen
+    move.l  a2,a0
+    moveq   #0,d0               * SrcX
+    moveq   #2,d1               * SrcMod
+    move.l  a4,a1
+    move.l  d6,d2               * DestX
+    move.l  d7,d3               * DestY
+    moveq   #VOTE_ICON_W,d4     * SizeX
+    lob     BltTemplate         * d5 = SizeY
+.x
+    popm    all
+    rts
+
+* in:
+*   d0 = mouse x, window coordinates
+*   d1 = mouse y, window coordinates
+* out:
+*   Z clear when the mouse is on the vote icon
+voteIconHit:
+    pushm   d0-d5
+    move    d0,d3
+    move    d1,d4
+    moveq   #0,d5
+    tst.b   voteIconShown(a5)
+    beq.b   .x
+    bsr     voteIconPos
+    subq    #1,d0
+    cmp     d0,d3
+    blt.b   .x
+    add     #VOTE_ICON_W+1,d0
+    cmp     d0,d3
+    bgt.b   .x
+    move    infoBoxTopEdge(a5),d1
+    cmp     d1,d4
+    blt.b   .x
+    add     listFontHeight(a5),d1
+    cmp     d1,d4
+    bgt.b   .x
+    moveq   #1,d5
+.x  tst.l   d5
+    popm    d0-d5
     rts
 
 * ctrl+v: likes the playing module, or removes the like when
@@ -67245,6 +67433,14 @@ tickdata	dc	$001c,$0030,$0060,$70c0,$3980,$1f00,$0e00
 ;	dc.b	%01001010,%00000000
 ;	dc.b	%01100101,%00000000
 ;	dc.b	%00000010,%00000000
+
+* Vote icon glyphs, VOTE_ICON_W x VOTE_ICON_H, one word per row
+voteIconOutline
+	dc.w	$0400,$0a00,$0a00,$d380,$d040,$d080,$d040,$df80
+voteIconFilled
+	dc.w	$0400,$0e00,$0e00,$df80,$dfc0,$df80,$dfc0,$df80
+voteIconBlank
+	dcb.w	VOTE_ICON_H,0
 
 earDataWhite:
 	dc.b	%01000000,%00000000	* 1 bpl
