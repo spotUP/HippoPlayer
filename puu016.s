@@ -63781,9 +63781,11 @@ voteMakeToken:
 
 * Writes prefs_voteToken into S:HippoPlayer.prefs without touching the
 * other settings in the file (they may differ from the ones in use).
-* An older, shorter file gets the missing fields from memory. Without a
-* prefs file of the current version the token is written with the next
-* prefs save.
+* An older, shorter file gets the missing fields from memory. With no
+* prefs file, or one of another prefs version, there is nothing to patch:
+* a normal full prefs save writes the settings in use and the token.
+* Otherwise the token would live in memory only and every run would
+* make a new one, so the server would count each run as a new voter.
 voteSaveToken:
     pushm   all
     subq    #4,sp
@@ -63792,15 +63794,15 @@ voteSaveToken:
     move.l  #MODE_OLDFILE,d2
     lob     Open
     move.l  d0,d6
-    beq     .x
+    beq     .full
     move.l  d6,d1
     move.l  sp,d2
     moveq   #1,d3
     lob     Read
     cmp.l   #1,d0
-    bne.b   .close
+    bne     .closeFull
     cmp.b   #prefsversio,(sp)
-    bne.b   .close
+    bne     .closeFull
     move.l  d6,d1
     moveq   #0,d2
     moveq   #OFFSET_END,d3
@@ -63829,6 +63831,13 @@ voteSaveToken:
 .close
     move.l  d6,d1
     lob     Close
+    bra.b   .x
+.closeFull
+    move.l  d6,d1
+    lore    Dos,Close
+.full
+    DPRINT  "vote:token full prefs save"
+    jsr     saveprefs
 .x
     addq    #4,sp
     popm    all
