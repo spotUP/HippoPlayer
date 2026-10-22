@@ -63377,7 +63377,7 @@ voteIconPos:
     move    WINSIZX(a5),d0
     sub     #10+1+VOTE_ICON_W,d0
     moveq   #VOTE_ICON_H,d2
-    tst.b   altbuttons(a5)
+    tst.b   bigButtons(a5)
     bne.b   .0
     moveq   #VOTE_ICON_H_TALL,d2
 .0  cmp     listFontHeight(a5),d2
@@ -63418,7 +63418,7 @@ voteDrawIcon:
 .draw
     * the tall pixel glyph follows the square pixel one
     moveq   #VOTE_ICON_H,d3
-    tst.b   altbuttons(a5)
+    tst.b   bigButtons(a5)
     bne.b   .square
     lea     VOTE_ICON_H*2(a2),a2
     moveq   #VOTE_ICON_H_TALL,d3
