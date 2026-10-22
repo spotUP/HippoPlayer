@@ -63263,21 +63263,27 @@ voteInfoRefresh:
 .x  rts
 
 VOTE_ICON_W = 10        * glyph width
-VOTE_ICON_H = 8         * glyph height, fits topaz 8
+VOTE_ICON_H = 8         * glyph height for square pixels, fits topaz 8
+VOTE_ICON_H_TALL = 5    * glyph height for tall pixels (640x256)
 
 * Position of the vote icon in window coordinates: right end of info
 * box row 1, centred on the row. Follows WINSIZX and the list font,
-* so it is computed on every use.
+* so it is computed on every use. The glyph is VOTE_ICON_H tall with
+* "Big buttons" on (square pixels) and VOTE_ICON_H_TALL otherwise,
+* like the button images.
 * out:
 *   d0 = x
 *   d1 = y
-*   d2 = height, VOTE_ICON_H or listFontHeight when that is smaller
+*   d2 = height, the glyph height or listFontHeight when that is smaller
 voteIconPos:
     moveq   #0,d0
     move    WINSIZX(a5),d0
     sub     #10+1+VOTE_ICON_W,d0
     moveq   #VOTE_ICON_H,d2
-    cmp     listFontHeight(a5),d2
+    tst.b   altbuttons(a5)
+    bne.b   .0
+    moveq   #VOTE_ICON_H_TALL,d2
+.0  cmp     listFontHeight(a5),d2
     bls.b   .1
     move    listFontHeight(a5),d2
 .1  moveq   #0,d1
@@ -63313,9 +63319,15 @@ voteDrawIcon:
     beq.b   .draw
     lea     voteIconFilled,a2
 .draw
+    * the tall pixel glyph follows the square pixel one
+    moveq   #VOTE_ICON_H,d3
+    tst.b   altbuttons(a5)
+    bne.b   .square
+    lea     VOTE_ICON_H*2(a2),a2
+    moveq   #VOTE_ICON_H_TALL,d3
+.square
     bsr     voteIconPos
     * a font lower than the glyph cuts rows from the top
-    moveq   #VOTE_ICON_H,d3
     sub     d2,d3
     add     d3,d3
     add     d3,a2
@@ -67471,13 +67483,17 @@ tickdata	dc	$001c,$0030,$0060,$70c0,$3980,$1f00,$0e00
 ;	dc.b	%01100101,%00000000
 ;	dc.b	%00000010,%00000000
 
-* Vote icon glyphs, VOTE_ICON_W x VOTE_ICON_H, one word per row
+* Vote icon glyphs, VOTE_ICON_W wide, one word per row. Each one is
+* the VOTE_ICON_H row square pixel glyph followed by the
+* VOTE_ICON_H_TALL row tall pixel glyph.
 voteIconOutline
 	dc.w	$0400,$0a00,$0a00,$d380,$d040,$d080,$d040,$df80
+	dc.w	$0400,$0a00,$d380,$d040,$df80
 voteIconFilled
 	dc.w	$0400,$0e00,$0e00,$df80,$dfc0,$df80,$dfc0,$df80
+	dc.w	$0400,$0e00,$df80,$dfc0,$df80
 voteIconBlank
-	dcb.w	VOTE_ICON_H,0
+	dcb.w	VOTE_ICON_H+VOTE_ICON_H_TALL,0
 
 earDataWhite:
 	dc.b	%01000000,%00000000	* 1 bpl
