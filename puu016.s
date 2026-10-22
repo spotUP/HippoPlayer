@@ -22229,6 +22229,11 @@ metaData4b dc.b    "º"
 metaData4  dc.b    "Year: %s",0
 metaData5b dc.b    "º"
 metaData5  dc.b    "Genre: %s",0
+metaData6b dc.b    "º"
+metaData6  dc.b    "Votes: %s",0
+voteInfoUnknown     dc.b "...",0
+voteInfoNumber      dc.b "%ld",0
+voteInfoNumberYours dc.b "%ld (you like it)",0
  even
 
 *** Avataan ikkuna
@@ -24416,6 +24421,29 @@ info_code:
     lea     metaData5b(pc),a0 
     bsr     .putMetaLine
 .noGenre
+    * Votes of the playing module, when it can be voted on.
+    * voteCount -1 = not known yet, a vote answer refreshes this.
+    tst.b   uhcAvailable(a5)
+    beq     .noVotes
+    tst.b   voteKeyValid(a5)
+    beq     .noVotes
+    st      (sp)
+    lea     -32(sp),sp
+    move.l  sp,a3
+    lea     voteInfoUnknown(pc),a0
+    move.l  voteCount(a5),d0
+    bmi.b   .votesFmt
+    lea     voteInfoNumber(pc),a0
+    tst.b   voteYours(a5)
+    beq.b   .votesFmt
+    lea     voteInfoNumberYours(pc),a0
+.votesFmt
+    jsr     desmsg3
+    move.l  sp,a4
+    lea     metaData6b(pc),a0
+    bsr     .putMetaLine
+    lea     32(sp),sp
+.noVotes
     tst.l   (sp)+
     beq     .noMeta
     tst.l   (sp)
