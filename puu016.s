@@ -47856,7 +47856,7 @@ p_sidmon2
 	beq.b	.ok3
 	rts
 .ok3
-	pushm	d1-a6
+	pushm	d1-d7/a1-a6
 	move.l	moduleaddress(a5),a0
 	lea	mainvolume(a5),a1
 	lea	dmawait(pc),a2
@@ -47864,7 +47864,11 @@ p_sidmon2
 	lea	songover(a5),a4
 	move.l	sidmon2routines(a5),a6
 	jsr	.INIT(a6)
-	popm	d1-a6
+	popm	d1-d7/a1-a6
+	move.l	a0,deliPatternInfo(a5)
+	* Stripes are decoded into a replayer buffer outside the module,
+	* tell the note scroller sanity check about it
+	move.l	PI_Stripes(a0),ps3mUnpackedPattern(a5)
 	moveq	#0,d0
 	rts	
 
@@ -47880,6 +47884,7 @@ p_sidmon2
 	bra	clearsound
 
 .end
+	clr.l	ps3mUnpackedPattern(a5)
 	bsr	rem_ciaint
 	bsr	clearsound
 	bra	vapauta_kanavat
