@@ -725,7 +725,7 @@ audioPortSignal	rs.b	1	* AudioIO:n signaali
 fileReqSignal	rs.b	1	* Filereqprosessin signaali
 rawKeySignal	rs.b	1	* rawkey inputhandlerilta
 tooltipSignal	rs.b  	1	* signal for opening tooltip popup
-searchDebounceSignal rs.b 1	* signal for running a typed playlist search
+searchDebounceDue rs.b 1	* set by the VBlank interrupt when a typed playlist search should run, shares tooltipSignal
 		rs.b	1	* pad, keeps the following fields even
 
 * Flag used to discard unnecessary mousemove IDCMP-messages
@@ -2837,8 +2837,6 @@ main:
 	move.b	d0,rawKeySignal(a5)
 	bsr	getsignal
 	move.b	d0,tooltipSignal(a5)
-	bsr	getsignal
-	move.b	d0,searchDebounceSignal(a5)
 
 	* Do all kinds of adjustments to gadgets
 
@@ -3365,8 +3363,6 @@ msgloop
 	bset	d1,d0
 	move.b	tooltipSignal(a5),d1
 	bset	d1,d0
-	move.b	searchDebounceSignal(a5),d1
-	bset	d1,d0
 	move.b	hippoport+MP_SIGBIT(a5),d1 * oman viestiportin bitti
 	bset	d1,d0
 
@@ -3557,21 +3553,25 @@ msgloop
 	bsr		handlePosUpdateSignal
 .noSig4
 	
-	* Tooltip display signal check
+	* Tooltip display signal check.
+	* The typed playlist search shares this signal bit, as the main
+	* task has few free signal bits left. The VBlank interrupt
+	* sets searchDebounceDue to tell the two apart.
 	move.b	tooltipSignal(a5),d3 
 	btst	d3,d0 
 	beq.b	.noTooltipSignal
-	bsr	tooltipDisplayHandler
-.noTooltipSignal
-
-	* Typed playlist search signal check
-	move.b	searchDebounceSignal(a5),d3
-	btst	d3,d0
-	beq.b	.noSearchDebounceSignal
+	tst.b	searchDebounceDue(a5)
+	beq.b	.noSearchDebounce
+	clr.b	searchDebounceDue(a5)
 	pushm	all
 	jsr	searchDebounceHandler
 	popm	all
-.noSearchDebounceSignal
+.noSearchDebounce
+	* Show the tooltip only once its tick count has expired
+	tst	tooltipTick(a5)
+	bne.b	.noTooltipSignal
+	bsr	tooltipDisplayHandler
+.noTooltipSignal
 
 * Vastataan IDCMP:n viestiin
 
@@ -3797,8 +3797,6 @@ exit
 	move.b	rawKeySignal(a5),d0
 	bsr	freesignal
 	move.b	tooltipSignal(a5),d0
-	bsr	freesignal
-	move.b	searchDebounceSignal(a5),d0
 	bsr	freesignal
 
 	move.l	fontbase(a5),d0
@@ -26140,12 +26138,13 @@ intserver
 	move.b	tooltipSignal(a5),d1
 	bsr	signalit
 .notActive
-	* Same for the typed playlist search
+	* Same for the typed playlist search, which shares tooltipSignal
 	tst	searchDebounceTick(a5)
 	beq.b	.notSearchActive
 	subq	#1,searchDebounceTick(a5)
 	bne.b	.notSearchActive
-	move.b	searchDebounceSignal(a5),d1
+	st	searchDebounceDue(a5)
+	move.b	tooltipSignal(a5),d1
 	bsr	signalit
 .notSearchActive
 
