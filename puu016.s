@@ -8319,11 +8319,7 @@ signalreceived
 	tst.l	d0
 	bne.b	.mododo
 
-	bsr	settimestart
-    jsr uslGetSongLength
-.reet0	st	playing(a5)
-	bsr	inforivit_play
-	jsr	start_info
+	jsr	moduleStarted
 .reet
 	rts
 
@@ -8909,11 +8905,7 @@ umph
 	tst.l	d0
 	bne	.inierr
 
-	st	playing(a5)		* Ei varmaan tuu initerroria
-	bsr	inforivit_play
-	bsr	settimestart
-    jsr uslGetSongLength
-	bra	start_info
+	jmp	moduleStarted
 	
 .new
 	DPRINT	"New mod"
@@ -8990,11 +8982,7 @@ umph
 	tst.l	d0
 	bne.b	.inierr
 
-	bsr	settimestart
-	st	playing(a5)
-	bsr	inforivit_play
-    jsr uslGetSongLength
-	bsr	start_info
+	jsr	moduleStarted
 
 .erer
 ;	bsr	shownames
@@ -11361,11 +11349,7 @@ rbutton1:
 	tst.l	d0
 	bne	.inierr
 
-	st	playing(a5)		* Ei varmaan tuu initerroria
-	bsr	settimestart
-	bsr	inforivit_play
-    jsr uslGetSongLength
-	bra	start_info
+	jmp	moduleStarted
 	;rts
 
 .new	moveq	#0,d7
@@ -11423,11 +11407,7 @@ rbutton1:
 	tst.l	d0
 	bne.b	.inierr
 
-	bsr	settimestart
-    jsr uslGetSongLength
-.reet0	st	playing(a5)
-	bsr	inforivit_play
-	bsr	start_info
+	jsr	moduleStarted
 .erer
 	rts
 
@@ -20268,6 +20248,18 @@ inforivit_clear_2ndrow:
 
 inforivit_killerps3m
 	lea	var_b,a5
+*******************************************************************************
+* Common tail after a module was loaded and p_init succeeded:
+* start the play timer, look up the song length, mark playing,
+* show the module in the main window and refresh the info window.
+*******
+moduleStarted:
+	bsr	settimestart
+    jsr uslGetSongLength
+	st	playing(a5)
+	bsr	inforivit_play
+	jmp	start_info
+
 inforivit_play:
 	bsr.b	inforivit_clear
 	tst.l	playingmodule(a5)
