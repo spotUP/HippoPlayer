@@ -31903,11 +31903,12 @@ loadmodule:
 .nip
 	bsr	tutki_moduuli
 	tst.l	d0
-	bne.b	.unk_err		* ep‰m‰‰r‰inen tiedosto
+	bne	.unk_err		* ep‰m‰‰r‰inen tiedosto
 
     push    d0
     jsr     readUsl
     jsr     readUme
+    jsr     genreCalcKey
     pop     d0
 
 	clr.b	contonerr_laskuri(a5)	* nollataan virhelaskuri
@@ -62491,6 +62492,19 @@ readUme:
 .noData
 .hasIt
 .reject
+    rts
+
+* Genre lookup key, also when no songlength or metadata DB is
+* loaded. Called after load, before init, as some players free the
+* module data in init. SIDs and samples are skipped like for the
+* metadata DB. Only needed when the network is available.
+genreCalcKey:
+    tst.b   uhcAvailable(a5)
+    beq     .x
+    bsr     umeIgnoreFormats
+    beq     .x
+    bsr     calcModuleMD5
+.x
     rts
 
 * Calculates a hash code for finding out audacious-uade metadata.
