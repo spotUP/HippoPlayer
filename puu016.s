@@ -446,6 +446,7 @@ prefs_midimode        rs.b      1
 prefs_ps3mamigus      rs.b      1 
 prefs_disableInfoScroll rs.b    1
 prefs_scopesize       rs.b      1
+prefs_voteToken       rs.b      34 * 32 lowercase hex + NUL + pad, made on the first vote
 prefs_size            rs.b      0
 
 	ifne	prefs_size&1
@@ -1634,13 +1635,13 @@ ptPositionTicksPtr  rs.l      1
 genreTask           rs.l      1 * HiP-genre process, set by the process itself
 genreCache          rs.l      1 * cache file contents, NULL if none
 genreCacheLength    rs.l      1
-genreSize           rs.l      1 * decrunched module length for the request
+genreCacheLoaded    rs.b      1 * <>0: cache load was tried. genreCache..here is a TSV_* descriptor
 genreDonePending    rs.b      1 * set by HiP-genre when it is done, before it raises uiRefreshSignal
 genreRunning        rs.b      1 * <>0: HiP-genre is running
 genrePending        rs.b      1 * <>0: genreNextUrl waits for the running request
 genreResultValid    rs.b      1 * <>0: genreResult holds a server answer
-genreCacheLoaded    rs.b      1 * <>0: cache load was tried
-                    rs.b      1 * padding
+genreKind           rs.b      1 * WORK_* of the running request
+genreSize           rs.l      1 * decrunched module length for the request
 genreTextKey        rs.b      6 * key of the module genreText belongs to
 genreReqKey         rs.b      6 * key of the running request
 genreNextKey        rs.b      6 * key of the pending request
@@ -1650,6 +1651,25 @@ genreResult         rs.b      64 * genre answered by the server, empty if none
 genreUrl            rs.b      1024 * request URL of the running request
 genreNextUrl        rs.b      1024 * request URL of the pending request
 genreArgs           rs.b      1100 * aget arguments
+
+* Song voting: S:HippoVotes.tsv cache, requests run in HiP-genre
+voteCache           rs.l      1 * cache file contents, NULL if none
+voteCacheLength     rs.l      1
+voteCacheLoaded     rs.b      1 * voteCache..here is a TSV_* descriptor
+voteNextKind        rs.b      1 * WORK_* of the waiting vote request, 0 if none
+voteResultValid     rs.b      1 * <>0: voteResultCount/Yours hold a server answer
+voteMsgDue          rs.b      1 * set by VBlank when the vote message has been shown long enough
+voteYours           rs.b      1 * your vote for the playing module, 0 or 5
+voteKeyValid        rs.b      1 * <>0: voteKey is the key of the playing module
+voteResultYours     rs.b      1 * yours from the server answer
+                    rs.b      1 * padding
+voteCount           rs.l      1 * votes of the playing module, -1 if unknown
+voteResultCount     rs.l      1 * count from the server answer
+voteMsgTick         rs.w      1 * VBlank ticks left for the vote message
+voteKey             rs.b      6 * key of the playing module
+voteReqKey          rs.b      6 * key of the running vote request
+voteNextKey         rs.b      6 * key of the waiting vote request
+voteNextUrl         rs.b      1024 * request URL of the waiting vote request
 
  if DEBUG
 debugDesBuf		rs.b	1000
@@ -3576,6 +3596,15 @@ msgloop
 	jsr	genreDone
 	pop	d0
 .noGenreSignal
+
+	* Vote message shown long enough, restore the info line
+	tst.b	voteMsgDue(a5)
+	beq.b	.noVoteMsg
+	clr.b	voteMsgDue(a5)
+	push	d0
+	jsr	inforivit_play
+	pop	d0
+.noVoteMsg
 
 	* Tooltip display signal check
 	move.b	tooltipSignal(a5),d3 
@@ -9295,6 +9324,11 @@ nappuloita:
     jsr     fetchAndSaveCurrentModule
     bra     .ee
 .5
+    cmp.b   #$34,d3     * v + control
+    bne     .6
+    jsr     voteCurrent
+    bra     .ee
+.6
 .noControl
 
     ; ---- MODIFIER: shift 
@@ -20290,6 +20324,7 @@ moduleStarted:
 	st	playing(a5)
 	bsr	inforivit_play
 	jsr	genreModuleStarted
+	jsr	voteModuleStarted
 	jmp	start_info
 
 inforivit_killerps3m
@@ -25443,6 +25478,15 @@ intserver
 	move.b	tooltipSignal(a5),d1
 	bsr	signalit
 .notActive
+	* Vote message countdown, wakes the main loop at 0
+	tst	voteMsgTick(a5)
+	beq.b	.noVoteMsg
+	subq	#1,voteMsgTick(a5)
+	bne.b	.noVoteMsg
+	st	voteMsgDue(a5)
+	move.b	uiRefreshSignal(a5),d1
+	bsr	signalit
+.noVoteMsg
 
 	* Are we playing something?
 	tst.b	playing(a5)
@@ -62546,18 +62590,40 @@ readUme:
 
 ******************************************************************************
 *
-* Genre lookup
+* Genre lookup and song voting
 *
 * The genre of the playing module comes from the DEViLBOX server, which
 * asks The Mod Archive. Answers are cached in S:HippoGenres.tsv, one line
 * per answer: <12 hex key> TAB <genre> TAB <days since 1978> LF.
 * An empty genre is a server non-hit, asked again after GENRE_RETRY_DAYS.
-* The last line for a key wins. One request runs at a time in the
-* HiP-genre process using aget, a newer module waits in genreNextUrl.
-* Errors show nothing and cache nothing.
+* The last line for a key wins. Errors show nothing and cache nothing.
+*
+* All network requests run one at a time in the HiP-genre process using
+* aget. genreKind tells what the running request is (WORK_*). Two
+* requests can wait: a genre lookup in genreNextUrl and a vote request
+* in voteNextUrl. The vote request goes first when the worker is free.
+* HiP-genre has no signal bit of its own: when it is done it sets
+* genreDonePending and raises uiRefreshSignal, the main loop then calls
+* genreDone.
+*
+* Votes: GET /api/hip/vote?k=<token>&m=<key>&r=<0|5>&n=<name>&p=<player>
+* sets your vote, GET /api/hip/votes?m=<key>[&k=<token>] reads it.
+* Both answer one line "<count> <yours>", anything else is a failure.
+* Your vote per key is cached in S:HippoVotes.tsv, same line format as
+* the genre cache with the value 0 or 5.
 *
 
 GENRE_RETRY_DAYS = 180
+
+WORK_GENRE = 0      * genre lookup
+WORK_VOTE  = 1      * set your vote, voteCurrent
+WORK_VOTES = 2      * read the votes, for the info window
+
+* Cache descriptor offsets: a cache in the variables is
+* data.l, length.l, loaded.b in this order.
+TSV_DATA   = 0
+TSV_LENGTH = 4
+TSV_LOADED = 8
 
 * Called from moduleStarted. Sets genreText from the cache, or starts
 * a request when the cache has no recent answer.
@@ -62573,11 +62639,13 @@ genreModuleStarted:
     move.l  uslMD5(a5),genreTextKey(a5)
     move.w  uslMD5+4(a5),genreTextKey+4(a5)
 
-    bsr     genreCacheLoad
+    lea     genreCache(a5),a4
+    lea     genreCacheFile(pc),a0
+    bsr     tsvCacheLoad
     lea     genreTextKey(a5),a0
     lea     genreKeyHex(a5),a3
     bsr     genreKeyToHex
-    bsr     genreCacheFind
+    bsr     tsvCacheFind
     beq     .ask
     * d0 = genre field, a1 = end of cache
     move.l  d0,a0
@@ -62618,6 +62686,9 @@ genreModuleStarted:
 .ask
     tst.b   genreRunning(a5)
     beq.b   .start
+    * A vote request is running: the lookup waits
+    tst.b   genreKind(a5)
+    bne.b   .later
     move.l  genreTextKey(a5),d0
     cmp.l   genreReqKey(a5),d0
     bne.b   .later
@@ -62638,18 +62709,24 @@ genreModuleStarted:
     bsr     genreBuildUrl
     move.l  genreTextKey(a5),genreReqKey(a5)
     move.w  genreTextKey+4(a5),genreReqKey+4(a5)
+    move.b  #WORK_GENRE,genreKind(a5)
     bsr     genreStartRequest
 .x
     popm    all
     rts
 
 * Called in the main task when HiP-genre signals it is done.
-* Caches the answer, shows it if it is for the playing module,
-* then starts the pending request.
+* Hands the answer to the request kind, then starts the next
+* waiting request: a vote first, then a genre lookup.
 genreDone:
     pushm   all
     tst.b   genreRunning(a5)
     bne     .x
+    cmp.b   #WORK_GENRE,genreKind(a5)
+    beq.b   .genre
+    bsr     voteDone
+    bra.b   .next
+.genre
     tst.b   genreResultValid(a5)
     beq.b   .next
     clr.b   genreResultValid(a5)
@@ -62672,6 +62749,12 @@ genreDone:
     beq.b   .next
     jsr     start_info
 .next
+    tst.b   voteNextKind(a5)
+    beq.b   .nextGenre
+    bsr     voteStartNext
+    tst.b   genreRunning(a5)
+    bne.b   .x
+.nextGenre
     tst.b   genrePending(a5)
     beq.b   .x
     clr.b   genrePending(a5)
@@ -62681,12 +62764,13 @@ genreDone:
     lea     genreUrl(a5),a1
 .u  move.b  (a0)+,(a1)+
     bne.b   .u
+    move.b  #WORK_GENRE,genreKind(a5)
     bsr     genreStartRequest
 .x
     popm    all
     rts
 
-* Called at exit. Stops HiP-genre and frees the cache.
+* Called at exit. Stops HiP-genre and frees the caches.
 genreExit:
     tst.b   genreRunning(a5)
     beq.b   .done
@@ -62701,39 +62785,46 @@ genreExit:
     jsr     dela
     bra.b   genreExit
 .done
+    move.l  voteCache(a5),a0
+    clr.l   voteCache(a5)
+    clr.l   voteCacheLength(a5)
+    jsr     freemem
     move.l  genreCache(a5),a0
     clr.l   genreCache(a5)
     clr.l   genreCacheLength(a5)
     jmp     freemem
 
-* Loads S:HippoGenres.tsv on first use
-genreCacheLoad:
-    tst.b   genreCacheLoaded(a5)
+* Loads a cache file on first use
+* in:
+*   a4 = cache descriptor (TSV_*)
+*   a0 = file name
+tsvCacheLoad:
+    tst.b   TSV_LOADED(a4)
     bne.b   .x
-    st      genreCacheLoaded(a5)
-    lea     genreCacheFile(pc),a0
+    st      TSV_LOADED(a4)
     jsr     plainLoadFile
-    move.l  d0,genreCache(a5)
+    move.l  d0,TSV_DATA(a4)
     bne.b   .1
     moveq   #0,d1
-.1  move.l  d1,genreCacheLength(a5)
+.1  move.l  d1,TSV_LENGTH(a4)
  if DEBUG
     move.l  d1,d0
-    DPRINT  "genre:cache length=%ld"
+    DPRINT  "tsv:cache length=%ld"
  endif
 .x  rts
 
 * in:
+*   a4 = cache descriptor (TSV_*)
 *   genreKeyHex = key to find
 * out:
-*   d0 = genre field of the last line for the key, or NULL. Z set if NULL.
+*   d0 = value field of the last line for the key, or NULL. Z set if NULL.
 *   a1 = end of cache
-genreCacheFind:
+tsvCacheFind:
     pushm   d1-d3/a0/a2/a3
     moveq   #0,d0
-    move.l  genreCache(a5),a0
+    move.l  TSV_DATA(a4),a0
     move.l  a0,a1
-    add.l   genreCacheLength(a5),a1
+    add.l   TSV_LENGTH(a4),a1
     move.l  a0,d1
     beq.b   .x
 .line
@@ -62762,17 +62853,33 @@ genreCacheFind:
     tst.l   d0
     rts
 
-* Appends genreReqKey with genreResult to the cache file and memory
+* Appends genreReqKey with genreResult to the genre cache
 genreCacheAdd:
+    pushm   d1/a0/a1/a4
+    lea     genreCache(a5),a4
+    lea     genreCacheFile(pc),a0
+    lea     genreReqKey(a5),a1
+    pushpea genreResult(a5),d1
+    bsr     tsvCacheAdd
+    popm    d1/a0/a1/a4
+    rts
+
+* Appends a line to a cache file and to its copy in memory
+* in:
+*   a4 = cache descriptor (TSV_*)
+*   a0 = file name
+*   a1 = 6 byte key
+*   d1 = value string, at most 64 characters
+tsvCacheAdd:
     pushm   all
     lea     -100(sp),sp
-    lea     genreReqKey(a5),a0
+    move.l  a0,d4
+    move.l  a1,a0
     lea     genreKeyHex(a5),a3
     bsr     genreKeyToHex
     bsr     genreToday
     move.l  d0,d2
     pushpea genreKeyHex(a5),d0
-    pushpea genreResult(a5),d1
     lea     .line(pc),a0
     move.l  sp,a3
     jsr     desmsg3
@@ -62784,7 +62891,7 @@ genreCacheAdd:
     sub.l   sp,d5
 
     move.l  _DosBase(a5),a6
-    pushpea genreCacheFile(pc),d1
+    move.l  d4,d1
     move.l  #MODE_READWRITE,d2
     lob     Open
     move.l  d0,d6
@@ -62797,32 +62904,32 @@ genreCacheAdd:
     move.l  sp,d2
     move.l  d5,d3
     lob     Write
-    DPRINT  "genre:cache write=%ld"
+    DPRINT  "tsv:cache write=%ld"
     move.l  d6,d1
     lob     Close
 .noFile
 
-    move.l  genreCacheLength(a5),d0
+    move.l  TSV_LENGTH(a4),d0
     add.l   d5,d0
     moveq   #MEMF_PUBLIC,d1
     jsr     getmem
     move.l  d0,d7
     beq.b   .noMem
-    move.l  genreCache(a5),a0
+    move.l  TSV_DATA(a4),a0
     move.l  d7,a1
-    move.l  genreCacheLength(a5),d0
+    move.l  TSV_LENGTH(a4),d0
     beq.b   .empty
     lore    Exec,CopyMem
 .empty
     move.l  sp,a0
     move.l  d7,a1
-    add.l   genreCacheLength(a5),a1
+    add.l   TSV_LENGTH(a4),a1
     move.l  d5,d0
     lore    Exec,CopyMem
-    move.l  genreCache(a5),a0
+    move.l  TSV_DATA(a4),a0
     jsr     freemem
-    move.l  d7,genreCache(a5)
-    add.l   d5,genreCacheLength(a5)
+    move.l  d7,TSV_DATA(a4)
+    add.l   d5,TSV_LENGTH(a4)
 .noMem
     lea     100(sp),sp
     popm    all
@@ -62869,14 +62976,52 @@ genreBuildUrl:
     pushpea genreKeyHex(a5),d0
     lea     .prefix(pc),a0
     jsr     desmsg3
-    bsr     .end
+    bsr     strEnd
     move.l  solename(a5),d0
     beq.b   .noName
     move.l  d0,a0
+    move     #255,d2
+    bsr     urlEncode
+.noName
+    clr.b   (a3)
+    move.l  genreSize(a5),d0
+    lea     .size(pc),a0
+    jsr     desmsg3
+ if DEBUG
+    bsr     strEnd
+    move.l  4*11(sp),d0
+    DPRINT  "genre:url=%s"
+ endif
+    popm    all
+    rts
+
+.prefix
+    dc.b    "https://devilbox.uprough.net/api/genre/%s?name=",0
+.size
+    dc.b    "&size=%ld",0
+    even
+
+* Moves a3 to the NUL at the end of the string at a3
+strEnd:
+    tst.b   (a3)+
+    bne.b   strEnd
+    subq.l  #1,a3
+    rts
+
+* Percent-encodes a string for a URL query value
+* in:
+*   a0 = string
+*   a3 = output
+*   d2 = max characters to take from the string
+* out:
+*   a3 = end of output, NUL written there
+urlEncode:
+    pushm   d0-d2/a0/a1
     lea     .digits(pc),a1
-    move    #255-1,d2
+    subq    #1,d2
+    bmi.b   .x
 .e  move.b  (a0)+,d0
-    beq.b   .noName
+    beq.b   .x
     cmp.b   #'0',d0
     blo.b   .esc
     cmp.b   #'9',d0
@@ -62910,34 +63055,46 @@ genreBuildUrl:
 .put
     move.b  d0,(a3)+
 .n  dbf     d2,.e
-.noName
+.x
     clr.b   (a3)
-    move.l  genreSize(a5),d0
-    lea     .size(pc),a0
-    jsr     desmsg3
- if DEBUG
-    bsr     .end
-    move.l  4*11(sp),d0
-    DPRINT  "genre:url=%s"
- endif
-    popm    all
+    popm    d0-d2/a0/a1
     rts
 
-.end
-    tst.b   (a3)+
-    bne.b   .end
-    subq.l  #1,a3
-    rts
-
-.prefix
-    dc.b    "https://devilbox.uprough.net/api/genre/%s?name=",0
-.size
-    dc.b    "&size=%ld",0
 .digits
     dc.b    "0123456789ABCDEF"
     even
 
-* Starts HiP-genre for genreUrl and genreReqKey
+* Lowercase hex, as the vote endpoints want it
+* in:
+*   a0 = bytes
+*   d0 = byte count
+*   a3 = output
+* out:
+*   a3 = end of output, NUL written there
+hexLower:
+    pushm   d0-d2/a0/a1
+    lea     .digits(pc),a1
+    subq    #1,d0
+    bmi.b   .x
+.l  move.b  (a0)+,d1
+    moveq   #0,d2
+    move.b  d1,d2
+    lsr.b   #4,d2
+    move.b  (a1,d2.w),(a3)+
+    and.w   #$f,d1
+    move.b  (a1,d1.w),(a3)+
+    dbf     d0,.l
+.x
+    clr.b   (a3)
+    popm    d0-d2/a0/a1
+    rts
+
+.digits
+    dc.b    "0123456789abcdef"
+    even
+
+* Starts HiP-genre for genreUrl. The caller sets genreKind and
+* the request key. genreRunning stays clear if it could not start.
 genreStartRequest:
     pushm   all
     st      genreRunning(a5)
@@ -62960,15 +63117,513 @@ genreProcessTags
     dc.b    "HiP-genre",0
 genreCacheFile
     dc.b    "S:HippoGenres.tsv",0
+voteCacheFile
+    dc.b    "S:HippoVotes.tsv",0
 genreReplyFile
     dc.b    "T:hipgenre",0
     even
 
 ******************************************************************************
 *
+* Song voting, main task side
+*
+
+* Called from moduleStarted. Sets voteKey and voteYours for the
+* playing module from the vote cache. No request.
+voteModuleStarted:
+    pushm   all
+    clr.b   voteKeyValid(a5)
+    clr.b   voteYours(a5)
+    moveq   #-1,d0
+    move.l  d0,voteCount(a5)
+    tst.b   uhcAvailable(a5)
+    beq.b   .x
+    tst.l   uslMD5(a5)
+    beq.b   .x
+    move.l  uslMD5(a5),voteKey(a5)
+    move.w  uslMD5+4(a5),voteKey+4(a5)
+    st      voteKeyValid(a5)
+    lea     voteKey(a5),a0
+    bsr     voteCacheGet
+    move.b  d0,voteYours(a5)
+.x
+    bsr     voteStateChanged
+    popm    all
+    rts
+
+* Called whenever voteKeyValid, voteYours or voteCount changes.
+* H5 plugs in here: redraw the thumbs-up icon in the main window
+* from voteKeyValid (show it at all) and voteYours (0 outline, 5 filled).
+* H6 plugs in here: refresh the "Votes:" line of an open info window
+* from voteCount (-1 = unknown) and voteYours.
+* Main task only. All registers are preserved by the callers.
+voteStateChanged:
+    rts
+
+* ctrl+v: likes the playing module, or removes the like when
+* it is liked already (from the local vote cache).
+* Ignored while a vote of the user is on its way.
+voteCurrent:
+    pushm   all
+    DPRINT  "voteCurrent"
+    tst.b   uhcAvailable(a5)
+    beq.b   .fail
+    tst.l   moduleaddress(a5)
+    beq.b   .fail
+    tst.b   voteKeyValid(a5)
+    beq.b   .fail
+    cmp.b   #WORK_VOTE,voteNextKind(a5)
+    beq.b   .x
+    tst.b   genreRunning(a5)
+    beq.b   .free
+    cmp.b   #WORK_VOTE,genreKind(a5)
+    beq.b   .x
+.free
+    bsr     voteEnsureToken
+    beq.b   .fail
+    moveq   #5,d0
+    tst.b   voteYours(a5)
+    beq.b   .like
+    moveq   #0,d0
+.like
+    moveq   #WORK_VOTE,d1
+    bsr     voteQueue
+.x
+    popm    all
+    rts
+.fail
+    jsr     beep
+    bra.b   .x
+
+* Reads the votes of the playing module from the server, for the
+* info window (H6). The answer arrives in voteCount via voteDone.
+voteRead:
+    pushm   all
+    tst.b   uhcAvailable(a5)
+    beq.b   .x
+    tst.b   voteKeyValid(a5)
+    beq.b   .x
+    moveq   #WORK_VOTES,d1
+    bsr     voteQueue
+.x
+    popm    all
+    rts
+
+* Builds the vote request for voteKey into voteNextUrl and starts it
+* when the worker is free. A waiting vote set is never replaced by a
+* read, as its answer carries the count too.
+* in:
+*   d0 = rating, 0 or 5 (WORK_VOTE only)
+*   d1 = WORK_VOTE or WORK_VOTES
+voteQueue:
+    pushm   all
+    cmp.b   #WORK_VOTES,d1
+    bne.b   .build
+    cmp.b   #WORK_VOTE,voteNextKind(a5)
+    beq     .x
+.build
+    move.l  d0,d6
+    move.l  d1,d7
+    lea     voteNextUrl(a5),a3
+    cmp.b   #WORK_VOTE,d7
+    bne.b   .read
+
+    pushpea prefs_voteToken+prefsdata(a5),d0
+    lea     .vote(pc),a0
+    jsr     desmsg3
+    bsr     strEnd
+    lea     voteKey(a5),a0
+    moveq   #6,d0
+    bsr     hexLower
+    move.l  d6,d0
+    lea     .rating(pc),a0
+    jsr     desmsg3
+    bsr     strEnd
+    move.l  solename(a5),d0
+    beq.b   .noName
+    move.l  d0,a0
+    move    #200,d2
+    bsr     urlEncode
+.noName
+    lea     .player(pc),a0
+.p  move.b  (a0)+,(a3)+
+    bne.b   .p
+    subq.l  #1,a3
+    lea     moduletype(a5),a0
+    moveq   #40-1,d2
+    bsr     urlEncode
+    bra.b   .built
+
+.read
+    lea     .votes(pc),a0
+    jsr     desmsg3
+    bsr     strEnd
+    lea     voteKey(a5),a0
+    moveq   #6,d0
+    bsr     hexLower
+    bsr     voteTokenValid
+    beq.b   .built
+    pushpea prefs_voteToken+prefsdata(a5),d0
+    lea     .token(pc),a0
+    jsr     desmsg3
+
+.built
+ if DEBUG
+    pushpea voteNextUrl(a5),d0
+    DPRINT  "vote:url=%s"
+ endif
+    move.l  voteKey(a5),voteNextKey(a5)
+    move.w  voteKey+4(a5),voteNextKey+4(a5)
+    move.b  d7,voteNextKind(a5)
+    tst.b   genreRunning(a5)
+    bne.b   .x
+    bsr     voteStartNext
+.x
+    popm    all
+    rts
+
+.vote
+    dc.b    "https://devilbox.uprough.net/api/hip/vote?k=%s&m=",0
+.rating
+    dc.b    "&r=%ld&n=",0
+.player
+    dc.b    "&p=",0
+.votes
+    dc.b    "https://devilbox.uprough.net/api/hip/votes?m=",0
+.token
+    dc.b    "&k=%s",0
+    even
+
+* Starts the waiting vote request. The worker must be free.
+* A vote set that cannot start is reported as failed.
+voteStartNext:
+    pushm   all
+    lea     voteNextUrl(a5),a0
+    lea     genreUrl(a5),a1
+.u  move.b  (a0)+,(a1)+
+    bne.b   .u
+    move.l  voteNextKey(a5),voteReqKey(a5)
+    move.w  voteNextKey+4(a5),voteReqKey+4(a5)
+    move.b  voteNextKind(a5),genreKind(a5)
+    clr.b   voteNextKind(a5)
+    clr.b   voteResultValid(a5)
+    bsr     genreStartRequest
+    tst.b   genreRunning(a5)
+    bne.b   .x
+    bsr     voteDone
+.x
+    popm    all
+    rts
+
+* Called in the main task when a vote request has ended.
+* Updates the vote cache and state, shows the result of a vote set.
+voteDone:
+    pushm   all
+    move.b  genreKind(a5),d7
+    move.b  #WORK_GENRE,genreKind(a5)
+    tst.b   voteResultValid(a5)
+    beq     .fail
+    clr.b   voteResultValid(a5)
+ if DEBUG
+    move.l  voteResultCount(a5),d0
+    moveq   #0,d1
+    move.b  voteResultYours(a5),d1
+    DPRINT  "vote:answer count=%ld yours=%ld"
+ endif
+    * Cache only what changed
+    lea     voteReqKey(a5),a0
+    bsr     voteCacheGet
+    cmp.b   voteResultYours(a5),d0
+    beq.b   .cached
+    lea     voteCache(a5),a4
+    lea     voteCacheFile(pc),a0
+    lea     voteReqKey(a5),a1
+    lea     .no(pc),a2
+    tst.b   voteResultYours(a5)
+    beq.b   .v
+    lea     .yes(pc),a2
+.v  move.l  a2,d1
+    bsr     tsvCacheAdd
+.cached
+    tst.b   voteKeyValid(a5)
+    beq.b   .msg
+    move.l  voteReqKey(a5),d0
+    cmp.l   voteKey(a5),d0
+    bne.b   .msg
+    move.w  voteReqKey+4(a5),d0
+    cmp.w   voteKey+4(a5),d0
+    bne.b   .msg
+    move.b  voteResultYours(a5),voteYours(a5)
+    move.l  voteResultCount(a5),voteCount(a5)
+    bsr     voteStateChanged
+.msg
+    cmp.b   #WORK_VOTE,d7
+    bne.b   .x
+    lea     .removed(pc),a0
+    tst.b   voteResultYours(a5)
+    beq.b   .show
+    move.l  voteResultCount(a5),d0
+    lea     .voted(pc),a0
+    lea     -32(sp),sp
+    move.l  sp,a3
+    jsr     desmsg3
+    move.l  sp,a0
+    bsr     voteMessage
+    lea     32(sp),sp
+    bra.b   .x
+.fail
+    DPRINT  "vote:failed"
+    cmp.b   #WORK_VOTE,d7
+    bne.b   .x
+    lea     .failed(pc),a0
+.show
+    bsr     voteMessage
+.x
+    popm    all
+    rts
+
+.voted
+    dc.b    "Voted (%ld)",0
+.removed
+    dc.b    "Vote removed",0
+.failed
+    dc.b    "Vote failed",0
+.yes
+    dc.b    "5",0
+.no
+    dc.b    "0",0
+    even
+
+* Shows a vote message on the info line for two seconds. The VBlank
+* interrupt counts voteMsgTick down, then the main loop redraws the
+* line through voteMsgDue.
+* in:
+*   a0 = text
+voteMessage:
+    pushm   all
+    jsr     putinfo
+    move    vertfreq(a5),d0
+    add     d0,d0
+    move    d0,voteMsgTick(a5)
+    popm    all
+    rts
+
+* in:
+*   a0 = 6 byte key
+* out:
+*   d0 = your vote in the vote cache, 0 or 5
+voteCacheGet:
+    pushm   d1-a6
+    lea     genreKeyHex(a5),a3
+    bsr     genreKeyToHex
+    lea     voteCache(a5),a4
+    lea     voteCacheFile(pc),a0
+    bsr     tsvCacheLoad
+    bsr     tsvCacheFind
+    beq.b   .no
+    move.l  d0,a0
+    cmp.l   a1,a0
+    bhs.b   .no
+    cmp.b   #'5',(a0)
+    bne.b   .no
+    moveq   #5,d0
+    bra.b   .x
+.no
+    moveq   #0,d0
+.x
+    popm    d1-a6
+    rts
+
+******************************************************************************
+*
+* Device token: 32 lowercase hex characters (128 bits) in
+* prefs_voteToken, made on the first vote and written into
+* S:HippoPlayer.prefs right away.
+*
+
+* out:
+*   Z clear if prefs_voteToken holds a valid token
+voteTokenValid:
+    pushm   d0/d1/a0
+    lea     prefs_voteToken+prefsdata(a5),a0
+    moveq   #32-1,d1
+.l  move.b  (a0)+,d0
+    cmp.b   #'0',d0
+    blo.b   .no
+    cmp.b   #'9',d0
+    bls.b   .ok
+    cmp.b   #'a',d0
+    blo.b   .no
+    cmp.b   #'f',d0
+    bhi.b   .no
+.ok dbf     d1,.l
+    tst.b   (a0)
+    bne.b   .no
+    moveq   #1,d0
+    bra.b   .x
+.no
+    moveq   #0,d0
+.x
+    popm    d0/d1/a0
+    rts
+
+* Makes the token if there is none yet.
+* out:
+*   Z clear if there is a valid token
+voteEnsureToken:
+    bsr     voteTokenValid
+    bne.b   .x
+    bsr     voteMakeToken
+    bsr     voteSaveToken
+    bsr     voteTokenValid
+.x  rts
+
+* Makes a new token from the srand mixing (AvailMem, ThisTask,
+* custom and CIA registers) plus DateStamp, AttnFlags, the ExecBase
+* checksum and the playing module's key, so that two Amigas booted the
+* same way do not get the same token. Not cryptographic, unique enough.
+voteMakeToken:
+    pushm   all
+    lea     -16(sp),sp
+    * srand sets seed, keep the random play sequence as it was
+    move.l  seed(a5),-(sp)
+    jsr     srand
+    move.l  seed(a5),d0
+    move.l  (sp)+,seed(a5)
+    move.l  #$6a09e667,d4
+    move.l  #$bb67ae85,d5
+    move.l  #$3c6ef372,d6
+    move.l  #$a54ff53a,d7
+    bsr     .mix
+
+    move.l  sp,d1
+    lore    Dos,DateStamp
+    move.l  (sp),d0
+    bsr     .mix
+    move.l  4(sp),d0
+    bsr     .mix
+    move.l  8(sp),d0
+    bsr     .mix
+
+    move.l  4.w,a0
+    moveq   #0,d0
+    move    AttnFlags(a0),d0
+    swap    d0
+    move    ChkSum(a0),d0
+    bsr     .mix
+
+    move.l  uslMD5(a5),d0
+    bsr     .mix
+    moveq   #0,d0
+    move    uslMD5+4(a5),d0
+    bsr     .mix
+
+    * Finish with the beam position, it has moved on by now
+    moveq   #8-1,d3
+.f  move.l  $dff004,d0
+    add.l   d3,d0
+    bsr     .mix
+    dbf     d3,.f
+
+    movem.l d4-d7,(sp)
+    move.l  sp,a0
+    moveq   #16,d0
+    lea     prefs_voteToken+prefsdata(a5),a3
+    bsr     hexLower
+    lea     16(sp),sp
+ if DEBUG
+    pushpea prefs_voteToken+prefsdata(a5),d0
+    DPRINT  "vote:new token=%s"
+ endif
+    popm    all
+    rts
+
+* Mixes d0 into the state d4-d7
+.mix
+    pushm   d0-d3
+    eor.l   d0,d4
+    move.l  d4,d0
+    move.l  #$9e3779b1,d1
+    jsr     mulu_32
+    rol.l   #8,d0
+    rol.l   #5,d0
+    add.l   d0,d5
+    eor.l   d5,d6
+    move.l  d6,d0
+    move.l  #$85ebca6b,d1
+    jsr     mulu_32
+    swap    d0
+    add.l   d0,d7
+    move.l  d4,d0
+    move.l  d5,d4
+    move.l  d6,d5
+    move.l  d7,d6
+    eor.l   d4,d0
+    move.l  d0,d7
+    popm    d0-d3
+    rts
+
+* Writes prefs_voteToken into S:HippoPlayer.prefs without touching the
+* other settings in the file (they may differ from the ones in use).
+* An older, shorter file gets the missing fields from memory. Without a
+* prefs file of the current version the token is written with the next
+* prefs save.
+voteSaveToken:
+    pushm   all
+    subq    #4,sp
+    move.l  _DosBase(a5),a6
+    move.l  #prefsfilename,d1
+    move.l  #MODE_OLDFILE,d2
+    lob     Open
+    move.l  d0,d6
+    beq     .x
+    move.l  d6,d1
+    move.l  sp,d2
+    moveq   #1,d3
+    lob     Read
+    cmp.l   #1,d0
+    bne.b   .close
+    cmp.b   #prefsversio,(sp)
+    bne.b   .close
+    move.l  d6,d1
+    moveq   #0,d2
+    moveq   #OFFSET_END,d3
+    lob     Seek
+    move.l  d6,d1
+    moveq   #0,d2
+    moveq   #OFFSET_CURRENT,d3
+    lob     Seek
+    move.l  d0,d5
+    bmi.b   .close
+    cmp.l   #prefs_voteToken,d5
+    bls.b   .1
+    move.l  #prefs_voteToken,d5
+.1  move.l  d6,d1
+    move.l  d5,d2
+    moveq   #OFFSET_BEGINNING,d3
+    lob     Seek
+    move.l  d6,d1
+    lea     prefsdata(a5),a0
+    add.l   d5,a0
+    move.l  a0,d2
+    move.l  #prefs_size,d3
+    sub.l   d5,d3
+    lob     Write
+    DPRINT  "vote:token write=%ld"
+.close
+    move.l  d6,d1
+    lob     Close
+.x
+    addq    #4,sp
+    popm    all
+    rts
+
+******************************************************************************
+*
 * HiP-genre process
-* Runs aget for genreUrl into T:hipgenre and parses the JSON reply into
-* genreResult. A reply without "source" is an error.
+* Runs aget for genreUrl into T:hipgenre. A genre reply is JSON, parsed
+* into genreResult; a reply without "source" is an error. A vote reply
+* is "<count> <yours>", parsed into voteResultCount and voteResultYours.
 *
 genreEntry:
 
@@ -62986,6 +63641,7 @@ genreEntry:
     move.l  d0,genreTask(a5)
     clr.b   genreResultValid(a5)
     clr.b   genreResult(a5)
+    clr.b   voteResultValid(a5)
     DPRINT  "genre:task started"
 
     pushpea genreReplyFile(pc),d1
@@ -63038,6 +63694,8 @@ genreEntry:
     jsr     plainLoadFile
     move.l  d0,d7
     beq     .x
+    cmp.b   #WORK_GENRE,genreKind(a5)
+    bne     .vote
     move.l  d7,a0
     lea     .source(pc),a1
     bsr     genreFindString
@@ -63081,6 +63739,78 @@ genreEntry:
     move.b  uiRefreshSignal(a5),d1
     bset    d1,d0
     lob     Signal
+    rts
+
+* Vote reply: <digits> SPACE <digits> [CR] LF, nothing else
+.vote
+    move.l  d7,a0
+    lea     (a0,d1.l),a2
+    bsr     .number
+    bmi.b   .free
+    move.l  d0,d3
+    cmp.l   a2,a0
+    bhs.b   .free
+    cmp.b   #' ',(a0)+
+    bne.b   .free
+    bsr     .number
+    bmi.b   .free
+    * yours is 0 or 5
+    tst.l   d0
+    beq.b   .yours
+    cmp.l   #5,d0
+    bne.b   .free
+.yours
+    move.l  d0,d4
+.tail
+    cmp.l   a2,a0
+    bhs.b   .voteOk
+    move.b  (a0)+,d0
+    cmp.b   #13,d0
+    beq.b   .tail
+    cmp.b   #10,d0
+    beq.b   .tail
+    bra     .free
+.voteOk
+    move.l  d3,voteResultCount(a5)
+    move.b  d4,voteResultYours(a5)
+    st      voteResultValid(a5)
+    bra     .free
+
+* in:
+*   a0 = text, a2 = end
+* out:
+*   d0 = value, a0 after the digits. N set if there were no digits
+*   or more than 9.
+.number
+    pushm   d1/d2
+    moveq   #0,d0
+    moveq   #0,d2
+.n  cmp.l   a2,a0
+    bhs.b   .nEnd
+    moveq   #0,d1
+    move.b  (a0),d1
+    sub.b   #'0',d1
+    cmp.b   #9,d1
+    bhi.b   .nEnd
+    addq.l  #1,a0
+    move.l  d0,-(sp)
+    lsl.l   #2,d0
+    add.l   (sp)+,d0
+    add.l   d0,d0
+    add.l   d1,d0
+    addq    #1,d2
+    bra.b   .n
+.nEnd
+    tst     d2
+    beq.b   .nBad
+    cmp     #9,d2
+    bhi.b   .nBad
+    popm    d1/d2
+    tst.l   d0          * at most 9 digits, N clear
+    rts
+.nBad
+    popm    d1/d2
+    moveq   #-1,d0
     rts
 
 .args
