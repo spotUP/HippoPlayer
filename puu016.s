@@ -22165,7 +22165,9 @@ metaData2  dc.b    "Publishers: %s",0
 metaData3b dc.b    "º"
 metaData3  dc.b    "Product: %s",0
 metaData4b dc.b    "º"
-metaData4  dc.b    "Year: %s"
+metaData4  dc.b    "Year: %s",0
+metaData5b dc.b    "º"
+metaData5  dc.b    "Genre: %s",0
  even
 
 *** Avataan ikkuna
@@ -24328,12 +24330,15 @@ info_code:
 .putMetaData:
     moveq   #0,d1
 .putMetaData0:
+    push    d1              * extra line change wanted
+    moveq   #0,d1
+    push    d1              * something written
     move.l  umeMetaDataPtr(a5),d0
-    beq     .noMeta
+    beq     .noUme
     move.l  d0,a4
     tst.b   (a4)
-    beq     .noMeta
-    push    d1
+    beq     .noUme
+    st      (sp)
     lea     metaData1b(pc),a0 
     bsr     .putMetaLine
     lea     metaData2b(pc),a0 
@@ -24342,10 +24347,21 @@ info_code:
     bsr     .putMetaLine
     lea     metaData4b(pc),a0 
     bsr     .putMetaLine
+.noUme
+    tst.b   genreText(a5)
+    beq     .noGenre
+    st      (sp)
+    lea     genreText(a5),a4
+    lea     metaData5b(pc),a0 
+    bsr     .putMetaLine
+.noGenre
     tst.l   (sp)+
+    beq     .noMeta
+    tst.l   (sp)
     beq     .noMeta
     bsr     .putLineChangeToEndOfBuffer
 .noMeta
+    addq.l  #4,sp
     rts
 
 .putMetaDataWithExtraLineChange
